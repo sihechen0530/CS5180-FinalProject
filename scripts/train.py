@@ -2,11 +2,11 @@
 Main training entry point. Parametrised by config YAML.
 
 Usage:
-  python scripts/train.py --config configs/3v1_config.yaml
-  python scripts/train.py --config configs/empty_config.yaml
+  python scripts/train.py --config configs/3v1_config.yaml --output-dir outputs/my_run
+  python scripts/train.py --config configs/empty_config.yaml --output-dir outputs/empty_001
 
-Runs from repo root (CS5180-FinalProject/). Saves checkpoints and final
-model under agents_dir from config (e.g. agents/baselines/ or agents/llm_augmented/).
+Output directory must be specified; all artifacts (checkpoints, tensorboard, agents)
+are written under it. Re-running with the same --output-dir and config resumes training.
 """
 
 import os
@@ -88,6 +88,7 @@ def find_latest_checkpoint(checkpoint_dir: str, prefix: str):
 def main():
     parser = argparse.ArgumentParser(description="Train PPO on GRF from config.")
     parser.add_argument("--config", type=str, default="configs/3v1_config.yaml", help="Path to YAML config.")
+    parser.add_argument("--output-dir", type=str, required=True, help="Directory for all run artifacts (checkpoints, tensorboard, agents). Re-use to resume.")
     parser.add_argument("--override", type=str, action="append", help="Override key=value (e.g. total_timesteps=1000).")
     args = parser.parse_args()
 
@@ -111,6 +112,12 @@ def main():
 
     os.chdir(REPO_ROOT)
 
+    # Output directory: required; all artifacts live under it
+    output_dir = args.output_dir
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(REPO_ROOT, output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
     env_id = config["env_id"]
     num_cpu = config.get("num_cpu", 16)
     total_timesteps = config["total_timesteps"]
@@ -120,20 +127,7 @@ def main():
     checkpoint_freq = config.get("checkpoint_freq", 100000)
     reward_config = config.get("reward_wrapper") or {}
 
-    # Single output root for all run artifacts (TB, checkpoints, videos, agents)
-    output_dir = config.get("output_dir", "outputs")
-    if not os.path.isabs(output_dir):
-        output_dir = os.path.join(REPO_ROOT, output_dir)
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Agents live under <output_dir>/agents by default; can be overridden in config
-    agents_dir_cfg = config.get("agents_dir")
-    if agents_dir_cfg is None:
-        agents_dir = os.path.join(output_dir, "agents")
-    else:
-        agents_dir = agents_dir_cfg
-        if not os.path.isabs(agents_dir):
-            agents_dir = os.path.join(REPO_ROOT, agents_dir)
+    agents_dir = os.path.join(output_dir, "agents")
     os.makedirs(agents_dir, exist_ok=True)
 
     checkpoint_dir = os.path.join(output_dir, "checkpoints", run_name)

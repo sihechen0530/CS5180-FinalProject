@@ -3,9 +3,7 @@
 env_id: academy_3_vs_1_with_keeper
 scenario: 3v1
 
-# Paths (relative to repo root)
-output_dir: outputs  # all tensorboard, checkpoints, videos, agents live under this
-# agents_dir: outputs/agents  # optional override; default is <output_dir>/agents
+# Run identifier (output directory is specified via --output-dir on the CLI)
 run_name: ppo_3v1
 checkpoint_prefix: ppo_3v1
 baseline_zip: ppo_3v1.zip

@@ -3,9 +3,7 @@
 env_id: academy_empty_goal_close
 scenario: empty
 
-# Paths (relative to repo root)
-output_dir: outputs  # all tensorboard, checkpoints, videos, agents live under this
-# agents_dir: outputs/agents  # optional override; default is <output_dir>/agents
+# Run identifier (output directory is specified via --output-dir on the CLI)
 run_name: ppo_empty_goal
 checkpoint_prefix: ppo_empty_goal
 baseline_zip: ppo_empty_goal.zip

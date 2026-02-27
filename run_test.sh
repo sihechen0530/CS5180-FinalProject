@@ -2,9 +2,9 @@
 # run_test.sh
 #
 # Quick sanity check for the empty_config pipeline:
-# - Runs training and evaluation
-# - Writes outputs/logs to a dedicated test output directory
+# - Runs training and evaluation into a new test_outputs/<timestamp> directory
 # - Fails if training times out (>15 min) or eval reward != 1.0
+# - Prints the test output directory path when finished (for merge readiness checks)
 
 set -euo pipefail
 
@@ -12,36 +12,24 @@ set -euo pipefail
 # Configurable parameters
 # ----------------------------------------------------------------------
 
-# Config to use
 CONFIG="configs/empty_config.yaml"
-
-# Designated test output directory (can be overridden by first arg)
-TEST_OUTPUT_DIR="${1:-outputs/run_test}"
-
-# Timeout for training in seconds (15 minutes)
 TRAIN_TIMEOUT=900
 
-# ----------------------------------------------------------------------
-# Paths and setup
-# ----------------------------------------------------------------------
-
+# Unique test output directory: test_outputs/<timestamp>
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${REPO_ROOT}"
+TEST_OUTPUT_DIR="test_outputs/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "${TEST_OUTPUT_DIR}"
 
 LOG_DIR="${TEST_OUTPUT_DIR}/logs"
-VIDEO_DIR="${TEST_OUTPUT_DIR}/videos"
-mkdir -p "${LOG_DIR}" "${VIDEO_DIR}"
+mkdir -p "${LOG_DIR}"
 
 TRAIN_LOG="${LOG_DIR}/train.log"
 EVAL_LOG="${LOG_DIR}/eval.log"
 
-echo "Using test output dir: ${TEST_OUTPUT_DIR}"
+echo "Test output directory: ${TEST_OUTPUT_DIR}"
 echo "Training log:          ${TRAIN_LOG}"
-echo "Evaluation log:        ${EVAL_LOG}"
-
-# The trained agent path under the overridden output_dir
-AGENT_NAME="ppo_empty_goal"
-AGENT_PATH="${TEST_OUTPUT_DIR}/agents/${AGENT_NAME}"
+echo "Evaluation log:       ${EVAL_LOG}"
 
 CONDA_BASE=$(conda info --base)
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
@@ -55,14 +43,14 @@ module load FFmpeg
 # ----------------------------------------------------------------------
 
 echo "=== Starting training (empty_config) ==="
-echo "Command: python3 scripts/train.py --config ${CONFIG} --override output_dir=${TEST_OUTPUT_DIR}"
+echo "Command: python3 scripts/train.py --config ${CONFIG} --output-dir ${TEST_OUTPUT_DIR}"
 echo "Training timeout: ${TRAIN_TIMEOUT}s"
 
 # Run training with timeout, log stdout+stderr
 set +e
 timeout "${TRAIN_TIMEOUT}" python3 scripts/train.py \
   --config "${CONFIG}" \
-  --override "output_dir=${TEST_OUTPUT_DIR}" \
+  --output-dir "${TEST_OUTPUT_DIR}" \
   >> "${TRAIN_LOG}" 2>&1
 STATUS=$?
 set -e
@@ -78,8 +66,8 @@ fi
 
 echo "Training completed successfully. See ${TRAIN_LOG}."
 
-if [[ ! -f "${AGENT_PATH}.zip" ]]; then
-  echo "ERROR: Expected trained agent not found at ${AGENT_PATH}.zip"
+if [[ ! -f "${TEST_OUTPUT_DIR}/agents/ppo_empty_goal.zip" ]]; then
+  echo "ERROR: Expected trained agent not found at ${TEST_OUTPUT_DIR}/agents/ppo_empty_goal.zip"
   exit 1
 fi
 
@@ -88,13 +76,12 @@ fi
 # ----------------------------------------------------------------------
 
 echo "=== Starting evaluation (empty_config) ==="
-echo "Command: python3 scripts/evaluate.py --config ${CONFIG} --agent ${AGENT_PATH} --logdir ${VIDEO_DIR}"
+echo "Command: python3 scripts/evaluate.py --config ${CONFIG} --output-dir ${TEST_OUTPUT_DIR}"
 
 set +e
 python3 scripts/evaluate.py \
   --config "${CONFIG}" \
-  --agent "${AGENT_PATH}" \
-  --logdir "${VIDEO_DIR}" \
+  --output-dir "${TEST_OUTPUT_DIR}" \
   >> "${EVAL_LOG}" 2>&1
 STATUS=$?
 set -e
@@ -113,9 +100,14 @@ echo "Evaluation completed. See ${EVAL_LOG}."
 if grep -q "Episode finished. Total reward: 1.0" "${EVAL_LOG}"; then
   echo "=== TEST PASSED ==="
   echo "Found 'Episode finished. Total reward: 1.0' in ${EVAL_LOG}"
+  echo ""
+  echo "Test output directory: ${REPO_ROOT}/${TEST_OUTPUT_DIR}"
+  echo "(logs, checkpoints, tensorboard, videos, and agents are under this directory)"
   exit 0
 else
   echo "=== TEST FAILED ==="
   echo "Did not find 'Episode finished. Total reward: 1.0' in ${EVAL_LOG}"
+  echo ""
+  echo "Test output directory: ${REPO_ROOT}/${TEST_OUTPUT_DIR}"
   exit 1
 fi

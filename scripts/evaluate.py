@@ -2,12 +2,13 @@
 Evaluation entry point: load a trained agent, run one episode, optional video.
 
 Usage:
-  python scripts/evaluate.py --config configs/3v1_config.yaml
-  python scripts/evaluate.py --config configs/empty_config.yaml
-  python scripts/evaluate.py --config configs/3v1_config.yaml --agent agents/llm_augmented/ppo_3v1
-  python scripts/evaluate.py --config configs/3v1_config.yaml --no-video
+  python scripts/evaluate.py --config configs/3v1_config.yaml --output-dir outputs/my_run
+  python scripts/evaluate.py --config configs/empty_config.yaml --output-dir outputs/empty_001
+  python scripts/evaluate.py --config configs/3v1_config.yaml --output-dir outputs/my_run --agent path/to/ppo.zip
+  python scripts/evaluate.py --config configs/3v1_config.yaml --output-dir outputs/my_run --no-video
 
-Runs from repo root. Writes videos to configurable logdir (default videos/).
+--output-dir is the run directory (same as used for training); agent is resolved from
+output_dir/agents/<baseline_zip> or latest in output_dir/checkpoints/<run_name>. Videos go to output_dir/videos.
 """
 
 import os
@@ -101,9 +102,9 @@ def convert_avi_to_mp4(input_path: str, output_path: str, overlay_text=None) -> 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained GRF agent.")
     parser.add_argument("--config", type=str, default="configs/3v1_config.yaml")
-    parser.add_argument("--agent", type=str, default=None, help="Path to .zip or dir (e.g. agents/baselines/ppo_3v1). Overrides config.")
+    parser.add_argument("--output-dir", type=str, required=True, help="Run directory (same as used for training); agent and videos resolved under it.")
+    parser.add_argument("--agent", type=str, default=None, help="Override: path to .zip. If not set, use output_dir/agents/<baseline_zip> or latest checkpoint.")
     parser.add_argument("--no-video", action="store_true", help="Disable video write.")
-    parser.add_argument("--logdir", type=str, default=None, help="Where to write videos. Defaults to <output_dir>/videos.")
     args = parser.parse_args()
 
     config_path = args.config
@@ -113,22 +114,19 @@ def main():
 
     os.chdir(REPO_ROOT)
 
+    # Output directory: required; agent and videos under it
+    output_dir = args.output_dir
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(REPO_ROOT, output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
     env_id = config["env_id"]
     run_name = config["run_name"]
     checkpoint_prefix = config.get("checkpoint_prefix", run_name)
     baseline_zip = config.get("baseline_zip", f"{run_name}.zip")
-    output_dir = config.get("output_dir", "outputs")
-    if not os.path.isabs(output_dir):
-        output_dir = os.path.join(REPO_ROOT, output_dir)
-
-    # Same agents_dir logic as in train.py
-    agents_dir_cfg = config.get("agents_dir")
-    if agents_dir_cfg is None:
-        agents_dir = os.path.join(output_dir, "agents")
-    else:
-        agents_dir = agents_dir_cfg
-        if not os.path.isabs(agents_dir):
-            agents_dir = os.path.join(REPO_ROOT, agents_dir)
+    agents_dir = os.path.join(output_dir, "agents")
+    checkpoint_dir = os.path.join(output_dir, "checkpoints", run_name)
+    baseline_path = os.path.join(agents_dir, baseline_zip)
 
     # Resolve model path
     if args.agent:
@@ -138,8 +136,6 @@ def main():
         if not os.path.isabs(model_path):
             model_path = os.path.join(REPO_ROOT, model_path)
     else:
-        checkpoint_dir = os.path.join(output_dir, "checkpoints", run_name)
-        baseline_path = os.path.join(agents_dir, baseline_zip)
         model_path = find_latest_checkpoint(checkpoint_dir, checkpoint_prefix)
         if model_path is None and os.path.exists(baseline_path):
             model_path = baseline_path
@@ -149,12 +145,7 @@ def main():
             )
 
     write_video = not args.no_video
-    if args.logdir:
-        logdir = args.logdir
-        if not os.path.isabs(logdir):
-            logdir = os.path.join(REPO_ROOT, logdir)
-    else:
-        logdir = os.path.join(output_dir, "videos")
+    logdir = os.path.join(output_dir, "videos")
     os.makedirs(logdir, exist_ok=True)
 
     env = football_env.create_environment(
