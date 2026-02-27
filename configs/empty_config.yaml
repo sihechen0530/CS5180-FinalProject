@@ -1,0 +1,24 @@
+# Academy empty goal — training and paths
+
+env_id: academy_empty_goal_close
+scenario: empty
+
+# Paths (relative to repo root)
+output_dir: outputs  # all tensorboard, checkpoints, videos, agents live under this
+# agents_dir: outputs/agents  # optional override; default is <output_dir>/agents
+run_name: ppo_empty_goal
+checkpoint_prefix: ppo_empty_goal
+baseline_zip: ppo_empty_goal.zip
+
+total_timesteps: 100000
+num_cpu: 1
+checkpoint_freq: 50000
+
+learning_rate: 0.0003
+ent_coef: 0.01
+
+reward_wrapper:
+  use_custom: false
+
+coach_interval: 50
+use_action_masking: false

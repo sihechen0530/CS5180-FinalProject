@@ -1,0 +1,18 @@
+# Checkpoints and saved models (training outputs)
+models/
+checkpoints/
+*_checkpoints/
+agents/
+
+# Unified run outputs (tensorboard, checkpoints, videos, etc.)
+outputs/
+
+# Legacy / stray evaluation outputs
+grf_tensorboard/
+videos/
+ppo_empty_goal.zip
+
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
