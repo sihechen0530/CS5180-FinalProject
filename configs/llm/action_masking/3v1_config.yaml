@@ -1,0 +1,39 @@
+# Academy 3v1 with keeper — training and paths
+
+env_id: academy_3_vs_1_with_keeper
+scenario: 3v1
+
+# Run identifier (output directory is specified via --output-dir on the CLI)
+run_name: masking_ppo_3v1
+checkpoint_prefix: masking_ppo_3v1
+baseline_zip: masking_ppo_3v1.zip
+
+# Training
+total_timesteps: 10000000
+num_cpu: 16
+checkpoint_freq: 500000  # save every N steps (total across envs)
+
+# PPO hyperparameters (optional overrides)
+learning_rate: 0.0003
+ent_coef: 0.01
+# n_steps: 2048
+# batch_size: 64
+# gamma: 0.99
+
+# Wrappers: set to null to use sparse env reward only
+reward_wrapper:
+  use_custom: false
+  # When use_custom: true, dense formula weights (see core/wrappers.py)
+  # ball_dist_weight: 0.5
+  # teammate_proximity_weight: 0.2
+  # goal_bonus: 1.0
+
+  # LLM Reward Injection
+  use_llm_reward: false
+  llm_reward_formula: null  # Provide python formula string here if true
+
+# Coach / action masking (Direction B): call every N steps
+coach_interval: 100
+use_action_masking: true
+
+

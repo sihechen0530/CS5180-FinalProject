@@ -64,6 +64,13 @@ echo "MODE=${MODE}"
 echo "CONFIG=${CONFIG_REL}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
 
+if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
+  echo "DEEPSEEK_API_KEY is detected and will be forwarded to the environment."
+  export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}"
+else
+  echo "No DEEPSEEK_API_KEY detected in the environment."
+fi
+
 # -------------------------- Conda & modules ----------------------------------
 source "${REPO_ROOT}/environment.sh"
 

@@ -1,0 +1,28 @@
+# Academy empty goal — training and paths
+
+env_id: academy_empty_goal_close
+scenario: empty
+
+# Run identifier (output directory is specified via --output-dir on the CLI)
+run_name: llm_reward_ppo_empty_goal
+checkpoint_prefix: llm_reward_ppo_empty_goal
+baseline_zip: llm_reward_ppo_empty_goal.zip
+
+total_timesteps: 100000
+num_cpu: 1
+checkpoint_freq: 50000
+
+learning_rate: 0.0003
+ent_coef: 0.01
+
+reward_wrapper:
+  use_custom: false
+  use_llm_reward: true
+  llm_reward_formula: |
+    def llm_reward_formula(env_reward, raw_obs_dict):
+        # Empty goal scenario, reward moving right
+        ball_dist_to_goal = raw_obs_dict.get("ball_dist_to_goal", 1.0)
+        return float(env_reward) + 0.1 * (1.0 - ball_dist_to_goal)
+
+coach_interval: 50
+use_action_masking: false

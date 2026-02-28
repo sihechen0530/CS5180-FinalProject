@@ -4,9 +4,9 @@ env_id: academy_3_vs_1_with_keeper
 scenario: 3v1
 
 # Run identifier (output directory is specified via --output-dir on the CLI)
-run_name: ppo_3v1
-checkpoint_prefix: ppo_3v1
-baseline_zip: ppo_3v1.zip
+run_name: llm_reward_ppo_3v1
+checkpoint_prefix: llm_reward_ppo_3v1
+baseline_zip: llm_reward_ppo_3v1.zip
 
 # Training
 total_timesteps: 10000000
@@ -27,6 +27,14 @@ reward_wrapper:
   # ball_dist_weight: 0.5
   # teammate_proximity_weight: 0.2
   # goal_bonus: 1.0
+
+  # LLM Reward Injection
+  use_llm_reward: true
+  llm_reward_formula: |
+    def llm_reward_formula(env_reward, raw_obs_dict):
+        # Dense reward: Give 0.1 reward for ball progressing +x direction towards goal
+        ball_dist_to_goal = raw_obs_dict.get("ball_dist_to_goal", 1.0)
+        return float(env_reward) + 0.1 * (1.0 - ball_dist_to_goal)
 
 # Coach / action masking (Direction B): call every N steps
 coach_interval: 50

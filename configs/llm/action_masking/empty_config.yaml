@@ -4,9 +4,9 @@ env_id: academy_empty_goal_close
 scenario: empty
 
 # Run identifier (output directory is specified via --output-dir on the CLI)
-run_name: ppo_empty_goal
-checkpoint_prefix: ppo_empty_goal
-baseline_zip: ppo_empty_goal.zip
+run_name: masking_ppo_empty_goal
+checkpoint_prefix: masking_ppo_empty_goal
+baseline_zip: masking_ppo_empty_goal.zip
 
 total_timesteps: 100000
 num_cpu: 1
@@ -17,6 +17,8 @@ ent_coef: 0.01
 
 reward_wrapper:
   use_custom: false
+  use_llm_reward: false
+  llm_reward_formula: null
 
 coach_interval: 50
-use_action_masking: false
+use_action_masking: true

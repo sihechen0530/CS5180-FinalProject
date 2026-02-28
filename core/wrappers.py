@@ -162,3 +162,132 @@ def make_dense_reward_fn(
         return out
 
     return fn
+
+# ---------------------------------------------------------------------------
+# LLM Integration Wrappers
+# ---------------------------------------------------------------------------
+
+# Module-level default function because lambdas cannot be pickled by multiprocessing.
+def _default_llm_reward(reward, obs_dict):
+    return float(reward)
+
+class LLMDenseRewardWrapper(gym.RewardWrapper):
+    """
+    A RewardWrapper that injects an LLM-generated mathematical formula to compute
+    dense rewards locally. This avoids slow step-by-step LLM API queries.
+    
+    Template for Injection Calculation:
+    -----------------------------------
+    The LLM formulates a python expression or callable. For example, a formula_str:
+    
+    def llm_reward_formula(env_reward, raw_obs_dict):
+        # Encourage moving the ball towards the right goal
+        ball_x = raw_obs_dict.get('ball_x', 0)
+        return env_reward + 0.1 * ball_x
+    
+    You compile this dynamically or evaluate it, producing a callable `reward_formula`,
+    which is passed to this wrapper at initialization.
+    """
+    def __init__(self, env, reward_formula=None):
+        super().__init__(env)
+        if reward_formula is None:
+            self._reward_formula = _default_llm_reward
+        else:
+            self._reward_formula = reward_formula
+        self._current_obs = None
+
+    def step(self, action):
+        # We override step to capture the observation before passing to reward()
+        obs, reward, done, info = self.env.step(action)
+        self._current_obs = obs
+        return obs, self.reward(reward), done, info
+
+    def reward(self, reward):
+        """
+        Dynamically calculates the LLM Dense Reward based on the injected formula.
+        """
+        if self._current_obs is None:
+            return float(reward)
+        obs_flat = np.asarray(self._current_obs).flatten()
+        features = observation_to_features(obs_flat)
+        custom_reward = self._reward_formula(reward, features)
+        return float(custom_reward)
+
+
+class ActionMaskWrapper(gym.Wrapper):
+    """
+    ActionMaskWrapper interfaces with the LLM Coach to generate a boolean mask 
+    of shape [19] representing the available GRF actions.
+    
+    sb3_contrib.MaskablePPO requires the environment to expose an `action_masks()`
+    method that returns True for valid actions and False for forbidden actions.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        # 19 possible actions in GRF. All valid by default.
+        self._action_mask = np.ones(19, dtype=bool)
+        self._last_obs = None
+
+    def __getstate__(self):
+        """
+        Prevent stable_baselines3's SubprocVecEnv from pickling the entire C++ environment
+        when it requests `get_attr("action_masks")`. It only needs the bound method signature.
+        """
+        state = self.__dict__.copy()
+        state['env'] = None 
+        return state
+
+    def update_mask(self, forbidden_actions: list):
+        """
+        Updates the internal mask array. Called periodically by the Coach.
+        
+        Args:
+            forbidden_actions (list): List of integer action IDs to forbid.
+        """
+        self._action_mask = np.ones(19, dtype=bool)
+        for act in forbidden_actions:
+            if 0 <= act < 19:
+                self._action_mask[act] = False
+                
+        # Ensure at least 'Idle' (0) is valid to prevent deadlocks
+        if not np.any(self._action_mask):
+            self._action_mask[0] = True
+
+    def action_masks(self) -> np.ndarray:
+        """
+        Returns the action mask. Automatically called by MaskablePPO.
+        """
+        # --- Step 2: Hardcoded Static Mask ---
+        # (Uncomment this block to test Step 2 without API calls)
+        # mask = np.copy(self._action_mask)
+        # if self._last_obs is not None:
+        #     features = observation_to_features(self._last_obs)
+        #     active_idx = features.get("active_player_idx", -1)
+        #     if active_idx != -1:
+        #         left_xs = features.get("left_team_xs", [])
+        #         if active_idx < len(left_xs):
+        #             player_x = left_xs[active_idx]
+        #             if player_x < -0.33:
+        #                 mask[12] = False # Forbid Shot
+        # return mask
+        # -------------------------------------
+        
+        # --- Step 3: Dynamic API Mask ---
+        # The mask is updated externally by CoachCallback calling `update_mask()`.
+        return self._action_mask
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self._last_obs = obs
+        return obs
+
+    def step(self, action):
+        # Even if MaskablePPO filters it, it's safe to fallback to Idle
+        # if the agent somehow selects a masked action.
+        mask = self.action_masks()
+        if not mask[action]:
+            action = 0  # Fallback to Idle
+        
+        obs, reward, done, info = self.env.step(action)
+        self._last_obs = obs
+        return obs, reward, done, info
