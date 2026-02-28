@@ -9,9 +9,9 @@ checkpoint_prefix: ppo_3v1
 baseline_zip: ppo_3v1.zip
 
 # Training
-total_timesteps: 5000000
+total_timesteps: 10000000
 num_cpu: 16
-checkpoint_freq: 100000  # save every N steps (total across envs)
+checkpoint_freq: 500000  # save every N steps (total across envs)
 
 # PPO hyperparameters (optional overrides)
 learning_rate: 0.0003
