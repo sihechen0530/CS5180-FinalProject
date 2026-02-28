@@ -29,9 +29,10 @@ import gfootball.env as football_env
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
 
 from core.wrappers import CustomRewardWrapper, make_dense_reward_fn
+from core.callbacks import GRFEvalStoppingCallback, StopTrainingException
 
 
 def load_config(path: str) -> dict:
@@ -171,11 +172,34 @@ def main():
     )
 
     save_freq = max(checkpoint_freq // num_cpu, 1)
-    cb = CheckpointCallback(
-        save_freq=save_freq,
-        save_path=checkpoint_dir,
-        name_prefix=checkpoint_prefix,
+    callbacks = [
+        CheckpointCallback(
+            save_freq=save_freq,
+            save_path=checkpoint_dir,
+            name_prefix=checkpoint_prefix,
+        )
+    ]
+
+    # Eval-based early stopping (always on; override eval_stopping.* in config for tuning)
+    eval_cfg = config.get("eval_stopping") or {}
+    eval_freq = int(eval_cfg.get("eval_freq", 50000))
+    n_eval_episodes = int(eval_cfg.get("n_eval_episodes", 100))
+    target_win_rate = float(eval_cfg.get("target_win_rate", 0.95))
+    callbacks.append(
+        GRFEvalStoppingCallback(
+            env_id=env_id,
+            eval_freq=eval_freq,
+            n_eval_episodes=n_eval_episodes,
+            target_win_rate=target_win_rate,
+            verbose=1,
+        )
     )
+    print(
+        f"Eval stopping: eval_freq={eval_freq}, n_eval_episodes={n_eval_episodes}, "
+        f"target_win_rate={target_win_rate:.0%}"
+    )
+
+    cb = CallbackList(callbacks)
 
     if remaining_timesteps <= 0:
         print(
@@ -190,7 +214,10 @@ def main():
             f"(remaining {remaining_timesteps})..."
         )
         t0 = time.perf_counter()
-        model.learn(total_timesteps=remaining_timesteps, callback=cb)
+        try:
+            model.learn(total_timesteps=remaining_timesteps, callback=cb)
+        except StopTrainingException as e:
+            print(f"Early stopping: {e}")
         elapsed = time.perf_counter() - t0
 
     if elapsed > 0:
