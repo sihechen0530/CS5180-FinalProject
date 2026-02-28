@@ -6,6 +6,7 @@ agents/
 
 # Unified run outputs (tensorboard, checkpoints, videos, etc.)
 outputs/
+test_outputs/
 
 # Legacy / stray evaluation outputs
 grf_tensorboard/

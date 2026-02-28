@@ -37,6 +37,7 @@ set +u
 conda activate /home/chen.sihe1/.conda/envs/grf_env
 set -u
 module load FFmpeg
+unset DISPLAY
 
 # ----------------------------------------------------------------------
 # Training
