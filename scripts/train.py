@@ -25,14 +25,15 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import yaml
 import gym
-import gfootball.env as football_env
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList, BaseCallback
 
-from core.wrappers import CustomRewardWrapper, make_dense_reward_fn
+from core.wrappers import CustomRewardWrapper, make_dense_reward_fn, ActionMaskWrapper, LLMDenseRewardWrapper
 from core.callbacks import GRFEvalStoppingCallback, StopTrainingException
+from core.coach import GroqCoach, DeepSeekCoach, MockDeepSeekCoach
+from core.callbacks import CoachCallback
 
 
 def load_config(path: str) -> dict:
@@ -63,10 +64,20 @@ class CustomCheckpointCallback(CheckpointCallback):
         return True
 
 
-def make_env(env_id: str, rank: int, seed: int, reward_config: dict):
-    def _init():
+class EnvBuilder:
+    def __init__(self, env_id: str, rank: int, seed: int, reward_config: dict):
+        self.env_id = env_id
+        self.rank = rank
+        self.seed = seed
+        self.reward_config = reward_config
+
+    def __call__(self):
+        import gfootball.env as football_env
+        from core.wrappers import CustomRewardWrapper, make_dense_reward_fn, ActionMaskWrapper, LLMDenseRewardWrapper
+        from stable_baselines3.common.monitor import Monitor
+        
         env = football_env.create_environment(
-            env_name=env_id,
+            env_name=self.env_id,
             stacked=False,
             representation="simple115",
             rewards="scoring",
@@ -75,17 +86,37 @@ def make_env(env_id: str, rank: int, seed: int, reward_config: dict):
             render=False,
         )
         env = Monitor(env)
-        if reward_config.get("use_custom"):
+        if self.reward_config.get("use_custom"):
             fn = make_dense_reward_fn(
-                ball_dist_weight=reward_config.get("ball_dist_weight", 0.0),
-                teammate_proximity_weight=reward_config.get("teammate_proximity_weight", 0.0),
-                goal_bonus=reward_config.get("goal_bonus", 1.0),
-                sparse_fallback=reward_config.get("sparse_fallback", True),
+                ball_dist_weight=self.reward_config.get("ball_dist_weight", 0.0),
+                teammate_proximity_weight=self.reward_config.get("teammate_proximity_weight", 0.0),
+                goal_bonus=self.reward_config.get("goal_bonus", 1.0),
+                sparse_fallback=self.reward_config.get("sparse_fallback", True),
             )
             env = CustomRewardWrapper(env, reward_fn=fn, use_delta_features=True)
-        env.seed(seed + rank)
+            
+        if self.reward_config.get("use_llm_reward"):
+            # Load string formula representation from the config if available
+            formula_str = self.reward_config.get("llm_reward_formula", None)
+            reward_func = None
+            if formula_str:
+                local_env = {}
+                try:
+                    # Dynamically extract 'llm_reward_formula'
+                    exec(formula_str, globals(), local_env)
+                    if "llm_reward_formula" in local_env:
+                        reward_func = local_env["llm_reward_formula"]
+                except Exception as e:
+                    print(f"Failed to compile LLM reward formula. Using default fallback. Error: {e}")
+            env = LLMDenseRewardWrapper(env, reward_formula=reward_func)
+            
+        # Add the ActionMaskWrapper for Coach integration
+        env = ActionMaskWrapper(env)
+        env.seed(self.seed + self.rank)
         return env
-    return _init
+
+def make_env(env_id: str, rank: int, seed: int, reward_config: dict):
+    return EnvBuilder(env_id, rank, seed, reward_config)
 
 
 def find_latest_checkpoint(checkpoint_dir: str, prefix: str):
@@ -169,13 +200,13 @@ def main():
 
     # Build or resume model
     if latest:
-        print(f"Loading existing PPO from: {latest}")
-        model = PPO.load(latest, env=env)
+        print(f"Loading existing MaskablePPO from: {latest}")
+        model = MaskablePPO.load(latest, env=env)
     else:
-        print("No checkpoint found. Building new PPO...")
+        print("No checkpoint found. Building new MaskablePPO...")
         tb_log = os.path.join(output_dir, "tensorboard", run_name)
         os.makedirs(tb_log, exist_ok=True)
-        model = PPO(
+        model = MaskablePPO(
             "MlpPolicy",
             env,
             verbose=1,
@@ -232,6 +263,23 @@ def main():
         f"Eval stopping: eval_freq={eval_freq}, n_eval_episodes={n_eval_episodes}, "
         f"target_win_rate={target_win_rate:.0%}"
     )
+
+    if config.get("use_action_masking", False):
+        interval = config.get("coach_interval", 50)
+        groq_api_key = os.environ.get("GROQ_API_KEY", None)
+        deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY", None)
+        
+        if groq_api_key:
+            coach_client = GroqCoach(api_key=groq_api_key)
+            print(f"Action Masking enabled via real GroqCoach API. Interval={interval}")
+        elif deepseek_api_key:
+            coach_client = DeepSeekCoach(api_key=deepseek_api_key)
+            print(f"Action Masking enabled via real DeepSeekCoach API. Interval={interval}")
+        else:
+            coach_client = MockDeepSeekCoach()
+            print(f"Action Masking enabled via MockDeepSeekCoach (No API key found). Interval={interval}")
+            
+        callbacks.append(CoachCallback(coach_client, coach_interval=interval, verbose=1))
 
     cb = CallbackList(callbacks)
 

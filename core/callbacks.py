@@ -17,6 +17,7 @@ if _REPO_ROOT not in sys.path:
 
 import gfootball.env as football_env
 from stable_baselines3.common.callbacks import BaseCallback
+from core.wrappers import observation_to_features
 
 
 class StopTrainingException(Exception):
@@ -24,6 +25,7 @@ class StopTrainingException(Exception):
 
     pass
 
+MAX_DEEPSEEK_TOKEN_BUDGET = 100_000_000
 
 class GRFEvalStoppingCallback(BaseCallback):
     """
@@ -118,3 +120,45 @@ class GRFEvalStoppingCallback(BaseCallback):
             except Exception:
                 pass
             self._eval_env = None
+
+class CoachCallback(BaseCallback):
+    """
+    Periodic callback that interfaces with the Coach API (or mock)
+    to generate Action Masks for the environments.
+    """
+    def __init__(self, coach_client, coach_interval: int = 50, max_token_budget: int = MAX_DEEPSEEK_TOKEN_BUDGET, verbose: int = 0):
+        super().__init__(verbose)
+        self.coach_client = coach_client
+        self.coach_interval = coach_interval
+        self.max_token_budget = max_token_budget
+
+    def _on_step(self) -> bool:
+        """
+        Called after every n_envs steps.
+        Updates action masks periodically.
+        """
+        if self.n_calls % self.coach_interval == 0:
+            if "new_obs" in self.locals:
+                new_obs = self.locals["new_obs"]
+                for i in range(self.training_env.num_envs):
+                    obs_i = new_obs[i]
+                    features = observation_to_features(obs_i)
+                    
+                    # Mock LLM API call
+                    advice = self.coach_client.get_coaching_advice(features)
+                    forbidden = advice.get("Forbidden_Actions", [])
+                    
+                    
+                    if self.verbose >= 1:
+                        print(f"[Coach Env {i}] Step {self.num_timesteps} - Role: {advice.get('Role')} | Masked: {forbidden}")
+                        
+                    # Stop training if we exceed a designated API budget
+                    total_tokens = advice.get("_total_tokens_used", 0)
+                    if self.max_token_budget and total_tokens > self.max_token_budget:
+                        print(f"[Coach Env {i}] DeepSeek API Token Budget Exceeded: {total_tokens} > {self.max_token_budget}. Stopping training early.")
+                        raise StopTrainingException(f"API Token Budget Exceeded: {total_tokens}")
+
+                    # Target the specific environment with the generated mask
+                    self.training_env.env_method("update_mask", forbidden, indices=i)
+        return True
+
