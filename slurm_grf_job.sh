@@ -15,6 +15,7 @@
 #SBATCH --partition=short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
 #SBATCH --time=08:00:00
 # Slurm stdout/stderr go under the job output dir (outputs/%j/logs/ when using default)
 #SBATCH --output=outputs/%j/logs/slurm-%x-%j.out
