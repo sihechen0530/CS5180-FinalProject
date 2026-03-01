@@ -1,0 +1,33 @@
+# Academy Counterattack Hard Baseline — training and paths
+
+env_id: academy_counterattack_hard
+scenario: counterattack_hard
+
+# Run identifier (output directory is specified via --output-dir on the CLI)
+run_name: ppo_counterattack_hard
+checkpoint_prefix: ppo_counterattack_hard
+baseline_zip: ppo_counterattack_hard.zip
+
+# Training
+total_timesteps: 10000000
+num_cpu: 16
+checkpoint_freq: 500000  # save every N steps (total across envs)
+
+# PPO hyperparameters (optional overrides)
+learning_rate: 0.0003
+ent_coef: 0.01
+# n_steps: 2048
+# batch_size: 64
+# gamma: 0.99
+
+# Wrappers: set to null to use sparse env reward only
+reward_wrapper:
+  use_custom: false
+  # When use_custom: true, dense formula weights (see core/wrappers.py)
+  # ball_dist_weight: 0.5
+  # teammate_proximity_weight: 0.2
+  # goal_bonus: 1.0
+
+# Coach / action masking (Direction B): call every N steps
+coach_interval: 50
+use_action_masking: false
