@@ -1,0 +1,33 @@
+# 11 vs 11 Easy Stochastic Baseline — training and paths
+
+env_id: 11_vs_11_easy_stochastic
+scenario: 11v11_easy_stochastic
+
+# Run identifier (output directory is specified via --output-dir on the CLI)
+run_name: ppo_11v11_easy_stochastic
+checkpoint_prefix: ppo_11v11_easy_stochastic
+baseline_zip: ppo_11v11_easy_stochastic.zip
+
+# Training
+total_timesteps: 20000000
+num_cpu: 16
+checkpoint_freq: 100000  # save every N steps (total across envs)
+
+# PPO hyperparameters (optional overrides)
+learning_rate: 0.0003
+ent_coef: 0.01
+# n_steps: 2048
+# batch_size: 64
+# gamma: 0.99
+
+# Wrappers: set to null to use sparse env reward only
+reward_wrapper:
+  use_custom: false
+  # When use_custom: true, dense formula weights (see core/wrappers.py)
+  # ball_dist_weight: 0.5
+  # teammate_proximity_weight: 0.2
+  # goal_bonus: 1.0
+
+# Coach / action masking (Direction B): call every N steps
+coach_interval: 50
+use_action_masking: false
