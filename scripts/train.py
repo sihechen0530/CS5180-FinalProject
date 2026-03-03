@@ -29,7 +29,7 @@ import gfootball.env as football_env
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
+from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList, BaseCallback
 
 from core.wrappers import CustomRewardWrapper, make_dense_reward_fn
 from core.callbacks import GRFEvalStoppingCallback, StopTrainingException
@@ -38,6 +38,29 @@ from core.callbacks import GRFEvalStoppingCallback, StopTrainingException
 def load_config(path: str) -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
+
+class CustomCheckpointCallback(CheckpointCallback):
+    def __init__(self, save_freq: int, save_path: str, name_prefix: str = "rl_model", save_replay_buffer: bool = False, save_vecnormalize: bool = False, verbose: int = 0, starting_step: int = 0):
+        super().__init__(save_freq, save_path, name_prefix, save_replay_buffer, save_vecnormalize, verbose)
+        self.starting_step = starting_step
+        
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            path = os.path.join(self.save_path, f"{self.name_prefix}_{self.num_timesteps + self.starting_step}_steps")
+            self.model.save(path)
+            if self.verbose >= 2:
+                print(f"Saving model checkpoint to {path}")
+            if self.save_replay_buffer and hasattr(self.model, "replay_buffer") and self.model.replay_buffer is not None:
+                replay_buffer_path = os.path.join(self.save_path, f"{self.name_prefix}_replay_buffer_{self.num_timesteps + self.starting_step}_steps.pkl")
+                self.model.save_replay_buffer(replay_buffer_path)
+                if self.verbose > 1:
+                    print(f"Saving model replay buffer checkpoint to {replay_buffer_path}")
+            if self.save_vecnormalize and self.model.get_vec_normalize_env() is not None:
+                vec_normalize_path = os.path.join(self.save_path, f"{self.name_prefix}_vecnormalize_{self.num_timesteps + self.starting_step}_steps.pkl")
+                self.model.get_vec_normalize_env().save(vec_normalize_path)
+                if self.verbose >= 2:
+                    print(f"Saving model VecNormalize to {vec_normalize_path}")
+        return True
 
 
 def make_env(env_id: str, rank: int, seed: int, reward_config: dict):
@@ -163,7 +186,17 @@ def main():
 
     # Determine how many timesteps are already in the checkpoint and only
     # train for the remaining steps up to total_timesteps from config.
-    already_trained = int(getattr(model, "num_timesteps", 0))
+    already_trained = 0
+    if latest:
+        filename = os.path.basename(latest)
+        parts = filename.replace(".zip", "").split("_")
+        for p in reversed(parts):
+            if p.isdigit():
+                already_trained = int(p)
+                break
+    
+    if already_trained == 0:
+        already_trained = int(getattr(model, "num_timesteps", 0))
     target_timesteps = int(total_timesteps)
     remaining_timesteps = max(target_timesteps - already_trained, 0)
     print(
@@ -173,10 +206,11 @@ def main():
 
     save_freq = max(checkpoint_freq // num_cpu, 1)
     callbacks = [
-        CheckpointCallback(
+        CustomCheckpointCallback(
             save_freq=save_freq,
             save_path=checkpoint_dir,
             name_prefix=checkpoint_prefix,
+            starting_step=already_trained,
         )
     ]
 
