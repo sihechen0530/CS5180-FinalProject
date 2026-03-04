@@ -14,7 +14,7 @@ output_dir/agents/<baseline_zip> or latest in output_dir/checkpoints/<run_name>.
 import os
 import sys
 import argparse
-import json
+import subprocess
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -25,13 +25,7 @@ import gym
 import gfootball.env as football_env
 from stable_baselines3 import PPO
 
-from core.wrappers import observation_to_features
-
-# Actions from gfootball
-ACTION_SHORT_PASS = 11
-ACTION_HIGH_PASS = 10
-ACTION_LONG_PASS = 9
-ACTION_SHOT = 12
+import cv2
 
 
 def load_config(path: str) -> dict:
@@ -71,18 +65,66 @@ def extract_steps_from_model_path(path: str) -> int:
     return -1
 
 
-def get_ball_out_of_bounds(obs_flat: list) -> bool:
-    features = observation_to_features(obs_flat)
-    # The field is mostly bounded by [-1, 1] in X and [-0.42, 0.42] in Y roughly
-    x, y = features.get("ball_x", 0.0), features.get("ball_y", 0.0)
-    return abs(y) > 0.44 or abs(x) > 1.05
+def concat_avi_files(avi_paths: list, output_path: str) -> None:
+    """Concatenate multiple AVI files using ffmpeg."""
+    list_path = os.path.join(os.path.dirname(output_path), "concat_list.txt")
+    with open(list_path, "w") as f:
+        for p in avi_paths:
+            f.write(f"file '{os.path.abspath(p).replace(os.sep, '/')}'\n")
+            
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_path,
+        "-c", "copy",
+        output_path
+    ]
+    subprocess.run(cmd, check=True)
+    os.remove(list_path)
+
+
+def convert_avi_to_mp4(input_path: str, output_path: str, overlay_text=None) -> None:
+    """
+    Convert AVI to MP4 using ffmpeg only, optionally drawing overlay text.
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        input_path,
+    ]
+
+    if overlay_text:
+        # Avoid single quotes in the overlay text to keep ffmpeg args simple
+        safe_text = str(overlay_text).replace("'", "")
+        drawtext = (
+            f"drawtext=text='{safe_text}':"
+            "x=(w-text_w)/2:y=40:"
+            "fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5"
+        )
+        cmd += ["-vf", drawtext]
+
+    cmd += [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "18",
+        output_path,
+    ]
+    subprocess.run(cmd, check=True)
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate a trained GRF agent (Quantitative).")
+    parser = argparse.ArgumentParser(description="Visualize a trained GRF agent (Qualitative).")
     parser.add_argument("--config", type=str, default="configs/3v1_config.yaml")
-    parser.add_argument("--output-dir", type=str, required=True, help="Run directory (same as used for training); agent and metrics resolved under it.")
+    parser.add_argument("--output-dir", type=str, required=True, help="Run directory (same as used for training); agent and videos resolved under it.")
     parser.add_argument("--agent", type=str, default=None, help="Override: path to .zip. If not set, use output_dir/agents/<baseline_zip> or latest checkpoint.")
-    parser.add_argument("--episodes", type=int, default=100, help="Number of episodes to evaluate.")
+    parser.add_argument("--no-video", action="store_true", help="Disable video write.")
+    parser.add_argument("--episodes", type=int, default=3, help="Number of episodes to visualize (usually 3-5).")
     args = parser.parse_args()
 
     config_path = args.config
@@ -122,96 +164,77 @@ def main():
                 f"No checkpoint or baseline found. Looked in {checkpoint_dir} and {baseline_path}."
             )
 
+    write_video = not args.no_video
+    logdir = os.path.join(output_dir, "videos")
+    os.makedirs(logdir, exist_ok=True)
+
     env = football_env.create_environment(
         env_name=env_id,
         stacked=False,
         representation="simple115",
         rewards="scoring",
-        render=False,
-        write_video=False,
-        write_full_episode_dumps=False,
+        render=True,
+        write_video=write_video,
+        write_full_episode_dumps=write_video,
+        logdir=logdir,
     )
 
     print(f"Loading agent: {model_path}")
     model = PPO.load(model_path)
 
-    # Metrics
     num_episodes = args.episodes
-    successes = 0
-    total_steps = 0
-    total_passes = 0
-    shots_taken = 0
-    total_shot_distance = 0.0
-    out_of_bounds_count = 0
-    goal_diff_total = 0
+    print(f"Running visualization for {num_episodes} episodes...")
 
-    print(f"Running evaluation for {num_episodes} episodes...")
     for ep in range(num_episodes):
         obs = env.reset()
         done = False
-        ep_reward = 0
-        ep_steps = 0
-        ep_passes = 0
-        
+        total_reward = 0
+
         while not done:
             action, _ = model.predict(obs, deterministic=True)
-            action_val = int(action)
-            
-            # Track passes
-            if action_val in [ACTION_SHORT_PASS, ACTION_HIGH_PASS, ACTION_LONG_PASS]:
-                ep_passes += 1
-            
-            # Track shot distance
-            if action_val == ACTION_SHOT:
-                shots_taken += 1
-                features = observation_to_features(obs)
-                ball_x, ball_y = features.get("ball_x", 0.0), features.get("ball_y", 0.0)
-                # Goal is at x=1.0, y=0.0
-                dist_sq = (1.0 - ball_x)**2 + (0.0 - ball_y)**2
-                total_shot_distance += dist_sq
-                
             obs, reward, done, info = env.step(action)
-            ep_reward += reward
-            ep_steps += 1
-            
-        total_steps += ep_steps
-        total_passes += ep_passes
-        
-        # Win / Out-of-bounds metrics
-        if ep_reward > 0:
-            successes += 1
-        else:
-            if get_ball_out_of_bounds(obs):
-                out_of_bounds_count += 1
-                
-        # Goal difference
-        if 'score_reward' in info:  # typically +1 for goal, -1 for concede
-            goal_diff_total += info.get('score_reward', ep_reward)
-        else:
-            goal_diff_total += ep_reward
+            total_reward += reward
+
+        print(f"Episode {ep + 1}/{num_episodes} finished. Total reward: {total_reward}")
 
     env.close()
 
-    metrics = {
-        "evaluation_episodes": num_episodes,
-        "Task_Performance": {
-            "success_rate": successes / num_episodes,
-            "average_goal_difference": goal_diff_total / num_episodes,
-            "average_episode_length": total_steps / num_episodes
-        },
-        "Tactical_Behavioral": {
-            "average_passes_per_episode": total_passes / num_episodes,
-            "average_shot_distance_sq": (total_shot_distance / shots_taken) if shots_taken > 0 else 0.0,
-            "out_of_bounds_rate": out_of_bounds_count / num_episodes
-        }
-    }
+    # If we wrote a video, convert the most recent AVI files in logdir to a single MP4
+    # and overlay some basic info (run name, mode, steps).
+    if write_video:
+        avi_files = [
+            os.path.join(logdir, f)
+            for f in os.listdir(logdir)
+            if f.lower().endswith(".avi") and not f.startswith("merged_")
+        ]
+        if not avi_files:
+            print(f"No .avi video files found in {logdir}; skipping MP4 conversion.")
+        else:
+            avi_files.sort(key=os.path.getmtime)
+            recent_avis = avi_files[-num_episodes:] if len(avi_files) >= num_episodes else avi_files
+            
+            if len(recent_avis) > 1:
+                latest_avi = recent_avis[-1]
+                merged_avi = os.path.join(logdir, "merged_" + os.path.basename(latest_avi))
+                print(f"Concatenating {len(recent_avis)} episodes into {merged_avi}...")
+                concat_avi_files(recent_avis, merged_avi)
+                final_avi = merged_avi
+            else:
+                final_avi = recent_avis[0]
 
-    metrics_path = os.path.join(output_dir, "evaluation_metrics.json")
-    with open(metrics_path, "w") as f:
-        json.dump(metrics, f, indent=4)
-        
-    print(f"Evaluation finished. Metrics saved to {metrics_path}:")
-    print(json.dumps(metrics, indent=4))
+            mp4_path = os.path.splitext(final_avi)[0] + ".mp4"
+
+            steps = extract_steps_from_model_path(model_path)
+            info_parts = [run_name, "mode=deterministic"]
+            if steps >= 0:
+                info_parts.append(f"steps={steps}")
+            overlay_text = " | ".join(info_parts)
+
+            print(
+                f"Converting final video to MP4: {final_avi} -> {mp4_path} "
+                f"with overlay '{overlay_text}'"
+            )
+            convert_avi_to_mp4(final_avi, mp4_path, overlay_text=overlay_text)
 
 
 if __name__ == "__main__":
