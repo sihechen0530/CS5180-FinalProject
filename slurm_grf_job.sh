@@ -65,15 +65,7 @@ echo "CONFIG=${CONFIG_REL}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
 
 # -------------------------- Conda & modules ----------------------------------
-# Off-screen rendering for GRF (no display on compute nodes)
-unset DISPLAY
-
-CONDA_BASE=$(conda info --base)
-source "${CONDA_BASE}/etc/profile.d/conda.sh"
-set +u
-conda activate /home/chen.sihe1/.conda/envs/grf_env
-set -u
-module load FFmpeg
+source "${REPO_ROOT}/environment.sh"
 
 # -------------------------- Run mode ----------------------------------------
 
