@@ -8,6 +8,9 @@ This module contains:
 
 import math
 import numpy as np
+import threading
+import collections
+import json
 
 
 class GRFNarrator:
@@ -126,6 +129,32 @@ Output your response strictly in the following JSON format:
 }}
 """
 
+COACH_SYSTEM_PROMPT = """You are an expert football coach analyzing a match in the Google Research Football environment.
+
+Your task is to:
+1. Assign a tactical "Role" to the active agent (e.g., Attacker, Supporter, Defender).
+2. Determine which of the 19 possible actions should be FORBIDDEN based on this role and the current state.
+
+Available Actions in GRF (0-18):
+0: Idle
+1: Left, 2: TopLeft, 3: Top, 4: TopRight
+5: Right, 6: BottomRight, 7: Bottom, 8: BottomLeft
+9: LongPass, 10: HighPass, 11: ShortPass, 12: Shot
+13: Sprint, 14: ReleaseDirection, 15: ReleaseSprint
+16: Sliding, 17: Dribble, 18: ReleaseDribble
+
+Output your response strictly in the following JSON format:
+{
+    "Role": "<role_name>",
+    "Forbidden_Actions": [<list of integer action IDs to mask>]
+}
+"""
+
+COACH_USER_PROMPT_TEMPLATE = """The current game state is described below:
+
+{narrative}
+"""
+
 class MockDeepSeekCoach:
     """
     A predictable mock service for DeepSeek V3.2 to test the end-to-end pipeline
@@ -176,6 +205,8 @@ class DeepSeekCoach:
     """
     Production service for DeepSeek V3.2 API integration.
     Queries the LLM with the game narrative to determine tactical roles and Action Masks.
+    Uses asynchronous API calls and caching to prevent blocking the training loop,
+    and leverages context caching by splitting the system and user prompts.
     """
     def __init__(self, api_key: str, model: str = "deepseek-chat"):
         try:
@@ -190,25 +221,29 @@ class DeepSeekCoach:
         )
         self.model = model
         self.total_tokens_used = 0
+        
+        # Async and caching state
+        self.advice_cache = collections.OrderedDict()
+        self.cache_size = 1000
+        self.latest_advice = {
+            "Role": "Fallback (Initializing)",
+            "Forbidden_Actions": [],
+            "_tokens_used_this_call": 0,
+            "_total_tokens_used": 0
+        }
+        self.pending_requests = set()
+        self.lock = threading.Lock()
 
-    def get_coaching_advice(self, features: dict) -> dict:
-        """
-        Translates the state into narrative, queries the DeepSeek API, and returns parsed JSON.
-        """
-        import json
-        narrative = self.narrator.translate(features)
-        prompt = COACH_PROMPT_TEMPLATE.format(narrative=narrative)
-
+    def _fetch_advice_async(self, narrative: str):
+        prompt = COACH_USER_PROMPT_TEMPLATE.format(narrative=narrative)
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a tactical football coach. Respond strictly in JSON format."},
+                    {"role": "system", "content": COACH_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={
-                    'type': 'json_object'
-                },
+                response_format={'type': 'json_object'},
                 max_tokens=100,
                 temperature=0.0
             )
@@ -216,37 +251,61 @@ class DeepSeekCoach:
             raw_content = response.choices[0].message.content
             advice = json.loads(raw_content)
             
-            # Track the tokens used
-            if response.usage:
-                self.total_tokens_used += response.usage.total_tokens
+            with self.lock:
+                if response.usage:
+                    self.total_tokens_used += response.usage.total_tokens
                 
-            # Basic validation
-            if "Role" not in advice:
-                 advice["Role"] = "Unknown"
-            if "Forbidden_Actions" not in advice:
-                 advice["Forbidden_Actions"] = []
-                 
-            # Append token metadata so the callback can monitor it
-            advice["_tokens_used_this_call"] = response.usage.total_tokens if response.usage else 0
-            advice["_total_tokens_used"] = self.total_tokens_used
-                 
-            return advice
-            
+                # Basic validation
+                if "Role" not in advice:
+                     advice["Role"] = "Unknown"
+                if "Forbidden_Actions" not in advice:
+                     advice["Forbidden_Actions"] = []
+                     
+                advice["_tokens_used_this_call"] = response.usage.total_tokens if response.usage else 0
+                advice["_total_tokens_used"] = self.total_tokens_used
+                
+                self.advice_cache[narrative] = advice
+                if len(self.advice_cache) > self.cache_size:
+                    self.advice_cache.popitem(last=False)
+                    
+                self.latest_advice = advice
+                
         except Exception as e:
-            print(f"[DeepSeekCoach] API Error: {e}. Falling back to empty mask.")
-            return {
-                "Role": "Fallback (Error)",
-                "Forbidden_Actions": [],
-                "_tokens_used_this_call": 0,
-                "_total_tokens_used": getattr(self, "total_tokens_used", 0)
-            }
+            print(f"[DeepSeekCoach] API Error: {e}")
+        finally:
+            with self.lock:
+                self.pending_requests.discard(narrative)
+
+    def get_coaching_advice(self, features: dict) -> dict:
+        """
+        Translates the state into narrative, checks cache, and returns latest advice.
+        If cache miss, launches a background thread to fetch new advice via DeepSeek API.
+        """
+        narrative = self.narrator.translate(features)
+        
+        with self.lock:
+            # Check cache hit
+            if narrative in self.advice_cache:
+                return self.advice_cache[narrative]
+            
+            # Cache miss - start async fetch if not already pending
+            if narrative not in self.pending_requests:
+                self.pending_requests.add(narrative)
+                thread = threading.Thread(target=self._fetch_advice_async, args=(narrative,))
+                thread.daemon = True
+                thread.start()
+            
+            # Return latest known advice immediately
+            return self.latest_advice
 
 class GroqCoach:
     """
     Production service for Groq API integration (e.g., Llama 3).
     Queries the LLM with the game narrative to determine tactical roles and Action Masks.
+    Uses asynchronous API calls and caching to prevent blocking the training loop,
+    and leverages context caching by splitting the system and user prompts.
     """
-    def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant"):
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
         try:
             from groq import Groq
         except ImportError:
@@ -256,25 +315,29 @@ class GroqCoach:
         self.client = Groq(api_key=api_key)
         self.model = model
         self.total_tokens_used = 0
+        
+        # Async and caching state
+        self.advice_cache = collections.OrderedDict()
+        self.cache_size = 1000
+        self.latest_advice = {
+            "Role": "Fallback (Initializing)",
+            "Forbidden_Actions": [],
+            "_tokens_used_this_call": 0,
+            "_total_tokens_used": 0
+        }
+        self.pending_requests = set()
+        self.lock = threading.Lock()
 
-    def get_coaching_advice(self, features: dict) -> dict:
-        """
-        Translates the state into narrative, queries the Groq API, and returns parsed JSON.
-        """
-        import json
-        narrative = self.narrator.translate(features)
-        prompt = COACH_PROMPT_TEMPLATE.format(narrative=narrative)
-
+    def _fetch_advice_async(self, narrative: str):
+        prompt = COACH_USER_PROMPT_TEMPLATE.format(narrative=narrative)
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a tactical football coach. Respond strictly in JSON format."},
+                    {"role": "system", "content": COACH_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={
-                    'type': 'json_object'
-                },
+                response_format={'type': 'json_object'},
                 max_tokens=200,
                 temperature=0.0
             )
@@ -282,28 +345,49 @@ class GroqCoach:
             raw_content = response.choices[0].message.content
             advice = json.loads(raw_content)
             
-            # Track the tokens used
-            if response.usage:
-                self.total_tokens_used += response.usage.total_tokens
+            with self.lock:
+                if getattr(response, "usage", None):
+                    self.total_tokens_used += response.usage.total_tokens
                 
-            # Basic validation
-            if "Role" not in advice:
-                 advice["Role"] = "Unknown"
-            if "Forbidden_Actions" not in advice:
-                 advice["Forbidden_Actions"] = []
-                 
-            # Append token metadata so the callback can monitor it
-            advice["_tokens_used_this_call"] = response.usage.total_tokens if response.usage else 0
-            advice["_total_tokens_used"] = self.total_tokens_used
-                 
-            return advice
-            
+                # Basic validation
+                if "Role" not in advice:
+                     advice["Role"] = "Unknown"
+                if "Forbidden_Actions" not in advice:
+                     advice["Forbidden_Actions"] = []
+                     
+                advice["_tokens_used_this_call"] = response.usage.total_tokens if getattr(response, "usage", None) else 0
+                advice["_total_tokens_used"] = self.total_tokens_used
+                
+                self.advice_cache[narrative] = advice
+                if len(self.advice_cache) > self.cache_size:
+                    self.advice_cache.popitem(last=False)
+                    
+                self.latest_advice = advice
+                
         except Exception as e:
-            print(f"[GroqCoach] API Error: {e}. Falling back to empty mask.")
-            return {
-                "Role": "Fallback (Error)",
-                "Forbidden_Actions": [],
-                "_tokens_used_this_call": 0,
-                "_total_tokens_used": getattr(self, "total_tokens_used", 0)
-            }
+            print(f"[GroqCoach] API Error: {e}")
+        finally:
+            with self.lock:
+                self.pending_requests.discard(narrative)
 
+    def get_coaching_advice(self, features: dict) -> dict:
+        """
+        Translates the state into narrative, checks cache, and returns latest advice.
+        If cache miss, launches a background thread to fetch new advice via Groq API.
+        """
+        narrative = self.narrator.translate(features)
+        
+        with self.lock:
+            # Check cache hit
+            if narrative in self.advice_cache:
+                return self.advice_cache[narrative]
+            
+            # Cache miss - start async fetch if not already pending
+            if narrative not in self.pending_requests:
+                self.pending_requests.add(narrative)
+                thread = threading.Thread(target=self._fetch_advice_async, args=(narrative,))
+                thread.daemon = True
+                thread.start()
+            
+            # Return latest known advice immediately
+            return self.latest_advice
