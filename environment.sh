@@ -5,6 +5,7 @@
 unset DISPLAY
 
 # Setup Conda
+module load anaconda3/2024.06
 CONDA_BASE=$(conda info --base)
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
 set +u
