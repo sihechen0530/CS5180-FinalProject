@@ -14,11 +14,12 @@ num_cpu: 16
 checkpoint_freq: 100000  # save every N steps (total across envs)
 
 # PPO hyperparameters (optional overrides)
-learning_rate: 0.0003
-ent_coef: 0.01
-# n_steps: 2048
-# batch_size: 64
-# gamma: 0.99
+# PPO hyperparameters (optional overrides)
+learning_rate: 0.0001
+ent_coef: 0.005
+n_steps: 4096
+batch_size: 128
+gamma: 0.993
 
 # Wrappers: set to null to use sparse env reward only
 reward_wrapper:

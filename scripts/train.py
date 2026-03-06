@@ -182,6 +182,9 @@ def main():
             tensorboard_log=tb_log,
             learning_rate=config.get("learning_rate", 0.0003),
             ent_coef=config.get("ent_coef", 0.01),
+            n_steps=config.get("n_steps", 2048),
+            batch_size=config.get("batch_size", 64),
+            gamma=config.get("gamma", 0.99),
         )
 
     # Determine how many timesteps are already in the checkpoint and only
