@@ -150,7 +150,13 @@ class CoachCallback(BaseCallback):
                     
                     
                     if self.verbose >= 1:
-                        print(f"[Coach Env {i}] Step {self.num_timesteps} - Role: {advice.get('Role')} | Masked: {forbidden}")
+                        hits = advice.get('_cache_hits', 0)
+                        misses = advice.get('_cache_misses', 0)
+                        total = hits + misses
+                        hit_rate = (hits / total * 100) if total > 0 else 0.0
+                        lat_latest = advice.get('_latest_api_latency', 0.0)
+                        lat_avg = advice.get('_avg_api_latency', 0.0)
+                        print(f"[Coach Env {i}] Step {self.num_timesteps} - Role: {advice.get('Role')} | Masked: {forbidden} | Cache: {hit_rate:.1f}% ({hits}/{total}) | Latency: {lat_latest:.2f}s (Avg: {lat_avg:.2f}s)")
                         
                     # Stop training if we exceed a designated API budget
                     total_tokens = advice.get("_total_tokens_used", 0)

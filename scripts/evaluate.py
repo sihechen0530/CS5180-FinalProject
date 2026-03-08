@@ -23,9 +23,9 @@ if REPO_ROOT not in sys.path:
 import yaml
 import gym
 import gfootball.env as football_env
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO
 
-from core.wrappers import observation_to_features
+from core.wrappers import observation_to_features, ActionMaskWrapper
 
 # Actions from gfootball
 ACTION_SHORT_PASS = 11
@@ -131,9 +131,10 @@ def main():
         write_video=False,
         write_full_episode_dumps=False,
     )
+    env = ActionMaskWrapper(env)
 
     print(f"Loading agent: {model_path}")
-    model = PPO.load(model_path)
+    model = MaskablePPO.load(model_path)
 
     # Metrics
     num_episodes = args.episodes
@@ -154,7 +155,8 @@ def main():
         ep_passes = 0
         
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            action_masks = env.action_masks() if hasattr(env, 'action_masks') else None
+            action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
             action_val = int(action)
             
             # Track passes

@@ -11,6 +11,7 @@ import numpy as np
 import threading
 import collections
 import json
+import time
 
 
 class GRFNarrator:
@@ -221,15 +222,24 @@ class DeepSeekCoach:
         )
         self.model = model
         self.total_tokens_used = 0
+        self.total_api_calls = 0
+        self.total_api_latency = 0.0
+        self.latest_api_latency = 0.0
         
         # Async and caching state
         self.advice_cache = collections.OrderedDict()
         self.cache_size = 1000
+        self.cache_hits = 0
+        self.cache_misses = 0
         self.latest_advice = {
             "Role": "Fallback (Initializing)",
             "Forbidden_Actions": [],
             "_tokens_used_this_call": 0,
-            "_total_tokens_used": 0
+            "_total_tokens_used": 0,
+            "_cache_hits": 0,
+            "_cache_misses": 0,
+            "_latest_api_latency": 0.0,
+            "_avg_api_latency": 0.0
         }
         self.pending_requests = set()
         self.lock = threading.Lock()
@@ -237,6 +247,7 @@ class DeepSeekCoach:
     def _fetch_advice_async(self, narrative: str):
         prompt = COACH_USER_PROMPT_TEMPLATE.format(narrative=narrative)
         try:
+            start_time = time.time()
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -247,11 +258,16 @@ class DeepSeekCoach:
                 max_tokens=100,
                 temperature=0.0
             )
+            elapsed_time = time.time() - start_time
             
             raw_content = response.choices[0].message.content
             advice = json.loads(raw_content)
             
             with self.lock:
+                self.total_api_calls += 1
+                self.total_api_latency += elapsed_time
+                self.latest_api_latency = elapsed_time
+
                 if response.usage:
                     self.total_tokens_used += response.usage.total_tokens
                 
@@ -286,9 +302,16 @@ class DeepSeekCoach:
         with self.lock:
             # Check cache hit
             if narrative in self.advice_cache:
-                return self.advice_cache[narrative]
+                self.cache_hits += 1
+                advice = self.advice_cache[narrative].copy()
+                advice["_cache_hits"] = self.cache_hits
+                advice["_cache_misses"] = self.cache_misses
+                advice["_latest_api_latency"] = self.latest_api_latency
+                advice["_avg_api_latency"] = self.total_api_latency / max(1, self.total_api_calls)
+                return advice
             
             # Cache miss - start async fetch if not already pending
+            self.cache_misses += 1
             if narrative not in self.pending_requests:
                 self.pending_requests.add(narrative)
                 thread = threading.Thread(target=self._fetch_advice_async, args=(narrative,))
@@ -296,7 +319,12 @@ class DeepSeekCoach:
                 thread.start()
             
             # Return latest known advice immediately
-            return self.latest_advice
+            advice = self.latest_advice.copy()
+            advice["_cache_hits"] = self.cache_hits
+            advice["_cache_misses"] = self.cache_misses
+            advice["_latest_api_latency"] = self.latest_api_latency
+            advice["_avg_api_latency"] = self.total_api_latency / max(1, self.total_api_calls)
+            return advice
 
 class GroqCoach:
     """
@@ -315,15 +343,24 @@ class GroqCoach:
         self.client = Groq(api_key=api_key)
         self.model = model
         self.total_tokens_used = 0
+        self.total_api_calls = 0
+        self.total_api_latency = 0.0
+        self.latest_api_latency = 0.0
         
         # Async and caching state
         self.advice_cache = collections.OrderedDict()
         self.cache_size = 1000
+        self.cache_hits = 0
+        self.cache_misses = 0
         self.latest_advice = {
             "Role": "Fallback (Initializing)",
             "Forbidden_Actions": [],
             "_tokens_used_this_call": 0,
-            "_total_tokens_used": 0
+            "_total_tokens_used": 0,
+            "_cache_hits": 0,
+            "_cache_misses": 0,
+            "_latest_api_latency": 0.0,
+            "_avg_api_latency": 0.0
         }
         self.pending_requests = set()
         self.lock = threading.Lock()
@@ -331,6 +368,7 @@ class GroqCoach:
     def _fetch_advice_async(self, narrative: str):
         prompt = COACH_USER_PROMPT_TEMPLATE.format(narrative=narrative)
         try:
+            start_time = time.time()
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -341,11 +379,16 @@ class GroqCoach:
                 max_tokens=200,
                 temperature=0.0
             )
+            elapsed_time = time.time() - start_time
             
             raw_content = response.choices[0].message.content
             advice = json.loads(raw_content)
             
             with self.lock:
+                self.total_api_calls += 1
+                self.total_api_latency += elapsed_time
+                self.latest_api_latency = elapsed_time
+
                 if getattr(response, "usage", None):
                     self.total_tokens_used += response.usage.total_tokens
                 
@@ -380,9 +423,16 @@ class GroqCoach:
         with self.lock:
             # Check cache hit
             if narrative in self.advice_cache:
-                return self.advice_cache[narrative]
+                self.cache_hits += 1
+                advice = self.advice_cache[narrative].copy()
+                advice["_cache_hits"] = self.cache_hits
+                advice["_cache_misses"] = self.cache_misses
+                advice["_latest_api_latency"] = self.latest_api_latency
+                advice["_avg_api_latency"] = self.total_api_latency / max(1, self.total_api_calls)
+                return advice
             
             # Cache miss - start async fetch if not already pending
+            self.cache_misses += 1
             if narrative not in self.pending_requests:
                 self.pending_requests.add(narrative)
                 thread = threading.Thread(target=self._fetch_advice_async, args=(narrative,))
@@ -390,4 +440,9 @@ class GroqCoach:
                 thread.start()
             
             # Return latest known advice immediately
-            return self.latest_advice
+            advice = self.latest_advice.copy()
+            advice["_cache_hits"] = self.cache_hits
+            advice["_cache_misses"] = self.cache_misses
+            advice["_latest_api_latency"] = self.latest_api_latency
+            advice["_avg_api_latency"] = self.total_api_latency / max(1, self.total_api_calls)
+            return advice
