@@ -31,14 +31,6 @@ echo "Test output directory: ${TEST_OUTPUT_DIR}"
 echo "Training log:          ${TRAIN_LOG}"
 echo "Evaluation log:       ${EVAL_LOG}"
 
-CONDA_BASE=$(conda info --base)
-source "${CONDA_BASE}/etc/profile.d/conda.sh"
-set +u
-conda activate /home/chen.sihe1/.conda/envs/grf_env
-set -u
-module load FFmpeg
-unset DISPLAY
-
 # ----------------------------------------------------------------------
 # Training
 # ----------------------------------------------------------------------

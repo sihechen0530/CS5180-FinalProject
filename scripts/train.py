@@ -158,10 +158,8 @@ def main():
     os.makedirs(checkpoint_dir, exist_ok=True)
     baseline_path = os.path.join(agents_dir, baseline_zip)
 
-    if num_cpu > 1:
-        env = SubprocVecEnv([make_env(env_id, i, 0, reward_config) for i in range(num_cpu)])
-    else:
-        env = DummyVecEnv([make_env(env_id, 0, 0, reward_config)])
+    # Always use SubprocVecEnv to bypass DummyVecEnv's strict Gymnasium type checks on GRF's gym v0.21 env
+    env = SubprocVecEnv([make_env(env_id, i, 0, reward_config) for i in range(num_cpu)])
 
     latest = find_latest_checkpoint(checkpoint_dir, checkpoint_prefix)
     if latest is None and os.path.exists(baseline_path):
