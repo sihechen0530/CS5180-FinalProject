@@ -17,12 +17,14 @@ ent_coef: 0.01
 
 reward_wrapper:
   use_custom: false
+  # Signature: llm_reward_formula(env_reward, features, prev_features) -> float
+  # prev_features is never None (on first step, equals features so delta=0)
   use_llm_reward: true
   llm_reward_formula: |
-    def llm_reward_formula(env_reward, raw_obs_dict):
-        # Empty goal scenario, reward moving right
-        ball_dist_to_goal = raw_obs_dict.get("ball_dist_to_goal", 1.0)
-        return float(env_reward) + 0.1 * (1.0 - ball_dist_to_goal)
+    def llm_reward_formula(env_reward, features, prev_features):
+        # Empty goal scenario: reward ball moving toward goal (delta-based)
+        delta_dist = prev_features["ball_dist_to_goal"] - features["ball_dist_to_goal"]
+        return float(env_reward) + 0.5 * delta_dist
 
 coach_interval: 50
 use_action_masking: false

@@ -168,50 +168,58 @@ def make_dense_reward_fn(
 # ---------------------------------------------------------------------------
 
 # Module-level default function because lambdas cannot be pickled by multiprocessing.
-def _default_llm_reward(reward, obs_dict):
-    return float(reward)
+def _default_llm_reward(env_reward, features, prev_features):
+    return float(env_reward)
 
-class LLMDenseRewardWrapper(gym.RewardWrapper):
+
+class LLMDenseRewardWrapper(gym.Wrapper):
     """
-    A RewardWrapper that injects an LLM-generated mathematical formula to compute
+    A Wrapper that injects an LLM-generated mathematical formula to compute
     dense rewards locally. This avoids slow step-by-step LLM API queries.
-    
+
+    Formula signature: reward_fn(env_reward, features, prev_features) -> float
+    - env_reward: the original sparse reward from the environment
+    - features: dict of current observation features (from observation_to_features)
+    - prev_features: dict of previous step features (never None; on first step,
+      equals current features so that delta calculations yield 0)
+
     Template for Injection Calculation:
     -----------------------------------
-    The LLM formulates a python expression or callable. For example, a formula_str:
-    
-    def llm_reward_formula(env_reward, raw_obs_dict):
-        # Encourage moving the ball towards the right goal
-        ball_x = raw_obs_dict.get('ball_x', 0)
-        return env_reward + 0.1 * ball_x
-    
-    You compile this dynamically or evaluate it, producing a callable `reward_formula`,
+    The LLM formulates a python callable. For example:
+
+    def llm_reward_formula(env_reward, features, prev_features):
+        # Reward ball moving toward goal (delta-based shaping)
+        delta_dist = prev_features["ball_dist_to_goal"] - features["ball_dist_to_goal"]
+        return env_reward + 0.5 * delta_dist
+
+    You compile this dynamically via exec(), producing a callable `reward_formula`,
     which is passed to this wrapper at initialization.
     """
+
     def __init__(self, env, reward_formula=None):
         super().__init__(env)
-        if reward_formula is None:
-            self._reward_formula = _default_llm_reward
-        else:
-            self._reward_formula = reward_formula
-        self._current_obs = None
+        self._reward_formula = reward_formula or _default_llm_reward
+        self._prev_features = None
 
     def step(self, action):
-        # We override step to capture the observation before passing to reward()
-        obs, reward, done, info = self.env.step(action)
-        self._current_obs = obs
-        return obs, self.reward(reward), done, info
-
-    def reward(self, reward):
-        """
-        Dynamically calculates the LLM Dense Reward based on the injected formula.
-        """
-        if self._current_obs is None:
-            return float(reward)
-        obs_flat = np.asarray(self._current_obs).flatten()
+        obs, env_reward, done, info = self.env.step(action)
+        obs_flat = np.asarray(obs).flatten()
         features = observation_to_features(obs_flat)
-        custom_reward = self._reward_formula(reward, features)
-        return float(custom_reward)
+
+        # On first step, prev_features is None; use current features as fallback
+        # so that any delta calculation yields 0 (no shaping reward on first step).
+        if self._prev_features is None:
+            prev = features.copy()
+        else:
+            prev = self._prev_features
+        self._prev_features = features.copy()
+
+        custom_reward = self._reward_formula(env_reward, features, prev)
+        return obs, float(custom_reward), done, info
+
+    def reset(self, **kwargs):
+        self._prev_features = None
+        return self.env.reset(**kwargs)
 
 
 class ActionMaskWrapper(gym.Wrapper):

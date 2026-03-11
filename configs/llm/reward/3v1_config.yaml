@@ -29,12 +29,14 @@ reward_wrapper:
   # goal_bonus: 1.0
 
   # LLM Reward Injection
+  # Signature: llm_reward_formula(env_reward, features, prev_features) -> float
+  # prev_features is never None (on first step, equals features so delta=0)
   use_llm_reward: true
   llm_reward_formula: |
-    def llm_reward_formula(env_reward, raw_obs_dict):
-        # Dense reward: Give 0.1 reward for ball progressing +x direction towards goal
-        ball_dist_to_goal = raw_obs_dict.get("ball_dist_to_goal", 1.0)
-        return float(env_reward) + 0.1 * (1.0 - ball_dist_to_goal)
+    def llm_reward_formula(env_reward, features, prev_features):
+        # Dense reward: encourage ball moving toward goal (delta-based shaping)
+        delta_dist = prev_features["ball_dist_to_goal"] - features["ball_dist_to_goal"]
+        return float(env_reward) + 0.5 * delta_dist
 
 # Coach / action masking (Direction B): call every N steps
 coach_interval: 50
