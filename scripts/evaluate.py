@@ -192,6 +192,8 @@ def main():
         else:
             goal_diff_total += ep_reward
 
+        print(f"Episode finished. Total reward: {ep_reward}")
+
     env.close()
 
     metrics = {

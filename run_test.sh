@@ -12,7 +12,7 @@ set -euo pipefail
 # Configurable parameters
 # ----------------------------------------------------------------------
 
-CONFIG="configs/empty_config.yaml"
+CONFIG="configs/baseline/empty_config.yaml"
 TRAIN_TIMEOUT=900
 
 # Unique test output directory: test_outputs/<timestamp>
