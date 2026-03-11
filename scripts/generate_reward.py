@@ -64,7 +64,7 @@ def save_config(path: str, code: str, task: str, scenario: str = None, base_conf
     config["reward_wrapper"]["use_custom"] = False
     config["reward_wrapper"]["use_llm_reward"] = True
     config["reward_wrapper"]["llm_reward_formula"] = code
-    config["reward_wrapper"]["_task_description"] = task
+    config["reward_wrapper"]["_task_description"] = task or "(default comprehensive reward)"
     if scenario:
         config["reward_wrapper"]["_scenario"] = scenario
 
@@ -76,12 +76,13 @@ def save_config(path: str, code: str, task: str, scenario: str = None, base_conf
     print("  (Note: YAML comments in original file are not preserved)")
 
 
-def save_snippet(path: str, code: str, task: str, scenario: str = None):
+def save_snippet(path: str, code: str, task: str = None, scenario: str = None):
     """Save reward function to a standalone Python file."""
+    task_str = task or "(default comprehensive reward)"
     header = f'''"""
 LLM-generated reward function for GRF.
 
-Task: {task}
+Task: {task_str}
 Scenario: {scenario or "not specified"}
 
 Usage in config YAML:
@@ -181,32 +182,39 @@ def main():
             print("  export GROQ_API_KEY='your-api-key'")
             sys.exit(1)
 
-    # Get task description
-    if args.task:
-        task = args.task
-        scenario = args.scenario
-    else:
+    # Get scenario and optional task
+    scenario = args.scenario
+    task = args.task  # Can be None
+
+    # Interactive mode if no scenario provided
+    if not scenario and not args.print_only:
         print("=" * 60)
         print("LLM Reward Function Generator")
         print("=" * 60)
         print(f"\nAvailable scenarios: {', '.join(available_scenarios)}")
-        scenario = input("Scenario (or press Enter to skip): ").strip() or None
+        scenario = input("Scenario (required): ").strip()
+        if not scenario:
+            print("Scenario is required. Exiting.")
+            sys.exit(1)
 
-        print("\nDescribe the behavior you want to reward.")
-        print("Examples:")
-        print("  - 'Encourage the agent to move the ball toward the goal'")
-        print("  - 'Reward dribbling while maintaining possession'")
-        print("  - 'Encourage team coordination and passing'")
+        print("\n(Optional) Additional emphasis for the reward function.")
+        print("Press Enter to use default comprehensive reward, or specify emphasis:")
+        print("  - 'Extra emphasis on passing'")
+        print("  - 'Higher weight on shooting opportunities'")
         print()
-        task = input("Task description: ").strip()
-        if not task:
-            print("No task provided. Exiting.")
-            sys.exit(0)
+        task = input("Additional emphasis (or Enter for default): ").strip() or None
+
+    if not scenario:
+        print("Error: --scenario is required")
+        print("  Example: --scenario 3v1")
+        sys.exit(1)
 
     print(f"\nProvider: {args.provider}")
-    if scenario:
-        print(f"Scenario: {scenario}")
-    print(f"Task: {task}")
+    print(f"Scenario: {scenario}")
+    if task:
+        print(f"Additional emphasis: {task}")
+    else:
+        print("Task: (default comprehensive reward)")
     print("\nGenerating reward function...")
 
     # Generate

@@ -78,7 +78,24 @@ SCENARIO_CONTEXTS = {
 
 REWARD_SYSTEM_PROMPT = """You are an expert reinforcement learning engineer designing dense reward functions for the Google Research Football (GRF) environment.
 
-Your task: Given a task description, write a Python reward function that provides dense feedback to guide learning.
+## Default Behavior (ALWAYS include these baseline components)
+
+Your reward function should ALWAYS include these fundamental components as a baseline:
+
+1. **Ball Progress** (potential-based): Reward ball moving toward opponent goal
+   - Use `prev_features["ball_dist_to_goal"] - features["ball_dist_to_goal"]`
+   
+2. **Possession**: Small bonus when our team controls the ball
+   - Check `features["ball_owned_team"] == 0`
+
+3. **Phase-Aware Logic**: Adjust rewards based on pitch position
+   - Defensive third (ball_x < -0.33): emphasize safe possession
+   - Midfield (-0.33 <= ball_x <= 0.33): emphasize progression
+   - Attacking third (ball_x > 0.33): emphasize shooting opportunities
+
+The user's task description provides **additional emphasis or modifications** to this baseline.
+If the task says "emphasis on X", increase weights for X while keeping other components.
+If the task describes a specific behavior, add it ON TOP of the baseline components.
 
 ## Available Features (observation dict)
 
@@ -122,8 +139,9 @@ def llm_reward_formula(env_reward: float, features: dict, prev_features: dict) -
 
 ## Output Format
 
-Return ONLY the Python function definition. No explanation, no markdown, no extra text.
-Start with `def llm_reward_formula(` and end with the return statement."""
+Return ONLY the Python function definition. No explanation, no markdown code fences, no extra text.
+Start directly with `def llm_reward_formula(` and end with `return reward`.
+Keep the code concise (under 40 lines) - combine similar logic where possible."""
 
 
 REWARD_FEW_SHOT_EXAMPLES = """
@@ -185,9 +203,12 @@ def llm_reward_formula(env_reward, features, prev_features):
 """
 
 
-REWARD_USER_PROMPT_TEMPLATE = """{scenario_context}Task Description: {task_description}
+REWARD_USER_PROMPT_TEMPLATE = """{scenario_context}{task_section}
+Write a comprehensive dense reward function that includes:
+1. The baseline components (ball progress, possession, phase-aware logic)
+2. Any additional emphasis if specified above
 
-Write a dense reward function for this task. Follow all constraints and output ONLY the Python function."""
+Follow all constraints and output ONLY the Python function."""
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +247,13 @@ class RewardGenerator:
         else:
             raise ValueError(f"Unknown provider: {provider}. Use 'deepseek' or 'groq'.")
 
-    def generate(self, task_description: str, scenario: str = None, temperature: float = 0.2) -> dict:
+    def generate(self, task_description: str = None, scenario: str = None, temperature: float = 0.2) -> dict:
         """
-        Generate a reward function from a task description.
+        Generate a reward function, optionally with additional emphasis.
 
         Args:
-            task_description: Natural language description of the desired behavior
+            task_description: Optional additional emphasis (e.g., "Extra emphasis on passing").
+                              If None, generates a default comprehensive reward.
             scenario: Optional scenario name (e.g., "3v1", "empty_goal") for context
             temperature: LLM sampling temperature (lower = more deterministic)
 
@@ -250,11 +272,17 @@ class RewardGenerator:
                 available = ", ".join(SCENARIO_CONTEXTS.keys())
                 print(f"Warning: Unknown scenario '{scenario}'. Available: {available}")
 
+        # Build task section (optional)
+        if task_description:
+            task_section = f"Additional Emphasis: {task_description}\n\n"
+        else:
+            task_section = "(No additional emphasis - generate optimal comprehensive reward)\n\n"
+
         messages = [
             {"role": "system", "content": REWARD_SYSTEM_PROMPT + "\n" + REWARD_FEW_SHOT_EXAMPLES},
             {"role": "user", "content": REWARD_USER_PROMPT_TEMPLATE.format(
                 scenario_context=scenario_context,
-                task_description=task_description
+                task_section=task_section
             )},
         ]
 
@@ -262,7 +290,7 @@ class RewardGenerator:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=800,
+                max_tokens=1200,
                 temperature=temperature,
             )
             raw_code = response.choices[0].message.content.strip()
