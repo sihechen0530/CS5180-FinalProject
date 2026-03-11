@@ -17,14 +17,9 @@ ent_coef: 0.01
 
 reward_wrapper:
   use_custom: false
-  # Signature: llm_reward_formula(env_reward, features, prev_features) -> float
-  # prev_features is never None (on first step, equals features so delta=0)
+  # LLM Reward Injection (from generated file)
   use_llm_reward: true
-  llm_reward_formula: |
-    def llm_reward_formula(env_reward, features, prev_features):
-        # Empty goal scenario: reward ball moving toward goal (delta-based)
-        delta_dist = prev_features["ball_dist_to_goal"] - features["ball_dist_to_goal"]
-        return float(env_reward) + 0.5 * delta_dist
+  llm_reward_file: rewards/empty_goal_default.py
 
 coach_interval: 50
 use_action_masking: false
