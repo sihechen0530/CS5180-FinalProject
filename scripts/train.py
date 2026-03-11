@@ -96,18 +96,36 @@ class EnvBuilder:
             env = CustomRewardWrapper(env, reward_fn=fn, use_delta_features=True)
             
         if self.reward_config.get("use_llm_reward"):
-            # Load string formula representation from the config if available
-            formula_str = self.reward_config.get("llm_reward_formula", None)
             reward_func = None
-            if formula_str:
-                local_env = {}
+
+            # Option 1: Load from separate .py file (recommended, preserves YAML comments)
+            reward_file = self.reward_config.get("llm_reward_file", None)
+            if reward_file:
+                import os as _os
+                if not _os.path.isabs(reward_file):
+                    reward_file = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), reward_file)
                 try:
-                    # Dynamically extract 'llm_reward_formula'
-                    exec(formula_str, globals(), local_env)
+                    with open(reward_file, "r") as f:
+                        formula_str = f.read()
+                    local_env = {}
+                    exec(formula_str, {"__builtins__": __builtins__}, local_env)
                     if "llm_reward_formula" in local_env:
                         reward_func = local_env["llm_reward_formula"]
                 except Exception as e:
-                    print(f"Failed to compile LLM reward formula. Using default fallback. Error: {e}")
+                    print(f"Failed to load reward from file '{reward_file}'. Error: {e}")
+
+            # Option 2: Load inline string formula from config
+            if reward_func is None:
+                formula_str = self.reward_config.get("llm_reward_formula", None)
+                if formula_str:
+                    local_env = {}
+                    try:
+                        exec(formula_str, {"__builtins__": __builtins__}, local_env)
+                        if "llm_reward_formula" in local_env:
+                            reward_func = local_env["llm_reward_formula"]
+                    except Exception as e:
+                        print(f"Failed to compile LLM reward formula. Using default fallback. Error: {e}")
+
             env = LLMDenseRewardWrapper(env, reward_formula=reward_func)
             
         # Add the ActionMaskWrapper for Coach integration
