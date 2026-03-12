@@ -63,6 +63,10 @@ def observation_to_features(obs: np.ndarray) -> dict:
             active = i
             break
 
+    # game_mode: indices 108-114, 7-element one-hot
+    # 0:Normal, 1:KickOff, 2:GoalKick, 3:FreeKick, 4:Corner, 5:ThrowIn, 6:Penalty
+    game_mode = int(np.argmax(o[108:115])) if o.size >= 115 else 0
+
     return {
         "ball_x": ball_x,
         "ball_y": ball_y,
@@ -75,6 +79,7 @@ def observation_to_features(obs: np.ndarray) -> dict:
         "ball_dist_to_goal": ball_dist_to_goal,
         "teammate_proximity_to_ball": teammate_proximity_to_ball,
         "active_player_idx": active,
+        "game_mode": game_mode,
     }
 
 
@@ -86,6 +91,7 @@ def _empty_features():
         "right_team_xs": [], "right_team_ys": [],
         "ball_dist_to_goal": 1.0, "teammate_proximity_to_ball": 1.0,
         "active_player_idx": -1,
+        "game_mode": 0,
     }
 
 
@@ -277,6 +283,7 @@ class ActionMaskWrapper(gym.Wrapper):
         return self._action_mask
 
     def reset(self, **kwargs):
+        self._action_mask = np.ones(19, dtype=bool)
         obs = self.env.reset(**kwargs)
         self._last_obs = obs
         return obs

@@ -32,7 +32,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList,
 
 from core.wrappers import CustomRewardWrapper, make_dense_reward_fn, ActionMaskWrapper, LLMDenseRewardWrapper
 from core.callbacks import GRFEvalStoppingCallback, StopTrainingException
-from core.coach import GroqCoach, DeepSeekCoach, MockDeepSeekCoach
+from core.coach import GroqCoach, DeepSeekCoach
 from core.callbacks import CoachCallback
 
 
@@ -266,20 +266,35 @@ def main():
 
     if config.get("use_action_masking", False):
         interval = config.get("coach_interval", 50)
+        entropy_threshold = config.get("entropy_threshold", 0.0)
+        max_masked_actions = config.get("max_masked_actions", 19)
         groq_api_key = os.environ.get("GROQ_API_KEY", None)
         deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY", None)
         
         if groq_api_key:
             coach_client = GroqCoach(api_key=groq_api_key)
-            print(f"Action Masking enabled via real GroqCoach API. Interval={interval}")
+            print(f"Action Masking enabled via GroqCoach. Interval={interval}")
         elif deepseek_api_key:
             coach_client = DeepSeekCoach(api_key=deepseek_api_key)
-            print(f"Action Masking enabled via real DeepSeekCoach API. Interval={interval}")
+            print(f"Action Masking enabled via DeepSeekCoach. Interval={interval}")
         else:
-            coach_client = MockDeepSeekCoach()
-            print(f"Action Masking enabled via MockDeepSeekCoach (No API key found). Interval={interval}")
-            
-        callbacks.append(CoachCallback(coach_client, coach_interval=interval, verbose=1))
+            raise EnvironmentError(
+                "use_action_masking=true requires a real LLM API key. "
+                "Set GROQ_API_KEY or DEEPSEEK_API_KEY in your environment."
+            )
+
+        if entropy_threshold > 0:
+            print(
+                f"Entropy-gated masking: threshold={entropy_threshold}, "
+                f"max_masked_actions={max_masked_actions}"
+            )
+        callbacks.append(CoachCallback(
+            coach_client,
+            coach_interval=interval,
+            entropy_threshold=entropy_threshold,
+            max_masked_actions=max_masked_actions,
+            verbose=1,
+        ))
 
     cb = CallbackList(callbacks)
 

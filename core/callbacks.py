@@ -7,6 +7,7 @@ Implements the "Threshold" strategy:
 - Stop if win rate >= target_win_rate (e.g. 95%).
 """
 
+import math
 import os
 import sys
 
@@ -15,6 +16,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+import numpy as np
+import torch
 import gfootball.env as football_env
 from stable_baselines3.common.callbacks import BaseCallback
 from core.wrappers import observation_to_features
@@ -125,46 +128,107 @@ class CoachCallback(BaseCallback):
     """
     Periodic callback that interfaces with the Coach API (or mock)
     to generate Action Masks for the environments.
+
+    Supports entropy-gated masking: when entropy_threshold > 0, the
+    policy's normalized entropy is computed before each mask update.
+    The LLM mask is only applied when the agent is confused (high
+    entropy); when confident (low entropy) the mask is cleared.
     """
-    def __init__(self, coach_client, coach_interval: int = 50, max_token_budget: int = MAX_DEEPSEEK_TOKEN_BUDGET, verbose: int = 0):
+
+    NUM_ACTIONS = 19
+
+    def __init__(
+        self,
+        coach_client,
+        coach_interval: int = 50,
+        max_token_budget: int = MAX_DEEPSEEK_TOKEN_BUDGET,
+        entropy_threshold: float = 0.0,
+        max_masked_actions: int = 19,
+        verbose: int = 0,
+    ):
         super().__init__(verbose)
         self.coach_client = coach_client
         self.coach_interval = coach_interval
         self.max_token_budget = max_token_budget
+        self.entropy_threshold = entropy_threshold
+        self.max_masked_actions = max_masked_actions
+
+    def _compute_normalized_entropy(self, obs: np.ndarray) -> float:
+        """Forward-pass a single observation through the policy and return
+        normalized entropy H(pi) / log(NUM_ACTIONS) in [0, 1]."""
+        obs_t = torch.as_tensor(obs).float().unsqueeze(0).to(self.model.device)
+        with torch.no_grad():
+            try:
+                features = self.model.policy.extract_features(
+                    obs_t, self.model.policy.features_extractor
+                )
+            except TypeError:
+                features = self.model.policy.extract_features(obs_t)
+            latent_pi = self.model.policy.mlp_extractor.forward_actor(features)
+            logits = self.model.policy.action_net(latent_pi)
+            probs = torch.softmax(logits, dim=-1)
+            entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1).item()
+        return entropy / math.log(self.NUM_ACTIONS)
 
     def _on_step(self) -> bool:
-        """
-        Called after every n_envs steps.
-        Updates action masks periodically.
-        """
-        if self.n_calls % self.coach_interval == 0:
-            if "new_obs" in self.locals:
-                new_obs = self.locals["new_obs"]
-                for i in range(self.training_env.num_envs):
-                    obs_i = new_obs[i]
-                    features = observation_to_features(obs_i)
-                    
-                    # Mock LLM API call
-                    advice = self.coach_client.get_coaching_advice(features)
-                    forbidden = advice.get("Forbidden_Actions", [])
-                    
-                    
-                    if self.verbose >= 1:
-                        hits = advice.get('_cache_hits', 0)
-                        misses = advice.get('_cache_misses', 0)
-                        total = hits + misses
-                        hit_rate = (hits / total * 100) if total > 0 else 0.0
-                        lat_latest = advice.get('_latest_api_latency', 0.0)
-                        lat_avg = advice.get('_avg_api_latency', 0.0)
-                        print(f"[Coach Env {i}] Step {self.num_timesteps} - Role: {advice.get('Role')} | Masked: {forbidden} | Cache: {hit_rate:.1f}% ({hits}/{total}) | Latency: {lat_latest:.2f}s (Avg: {lat_avg:.2f}s)")
-                        
-                    # Stop training if we exceed a designated API budget
-                    total_tokens = advice.get("_total_tokens_used", 0)
-                    if self.max_token_budget and total_tokens > self.max_token_budget:
-                        print(f"[Coach Env {i}] DeepSeek API Token Budget Exceeded: {total_tokens} > {self.max_token_budget}. Stopping training early.")
-                        raise StopTrainingException(f"API Token Budget Exceeded: {total_tokens}")
+        """Called after every n_envs steps. Updates action masks periodically,
+        gated by the policy's entropy when entropy_threshold > 0."""
+        if self.n_calls % self.coach_interval != 0:
+            return True
+        if "new_obs" not in self.locals:
+            return True
 
-                    # Target the specific environment with the generated mask
-                    self.training_env.env_method("update_mask", forbidden, indices=i)
+        new_obs = self.locals["new_obs"]
+        for i in range(self.training_env.num_envs):
+            obs_i = new_obs[i]
+
+            use_entropy_gate = self.entropy_threshold > 0.0
+            if use_entropy_gate:
+                h_norm = self._compute_normalized_entropy(obs_i)
+                if h_norm < self.entropy_threshold:
+                    self.training_env.env_method("update_mask", [], indices=i)
+                    if self.verbose >= 1:
+                        print(
+                            f"[Coach Env {i}] Step {self.num_timesteps} - "
+                            f"Entropy {h_norm:.3f} < {self.entropy_threshold} "
+                            f"-> SKIP mask (agent confident)"
+                        )
+                    continue
+
+            features = observation_to_features(obs_i)
+            advice = self.coach_client.get_coaching_advice(features)
+            forbidden = advice.get("Forbidden_Actions", [])
+
+            if self.max_masked_actions < self.NUM_ACTIONS:
+                forbidden = forbidden[: self.max_masked_actions]
+
+            if self.verbose >= 1:
+                hits = advice.get("_cache_hits", 0)
+                misses = advice.get("_cache_misses", 0)
+                total = hits + misses
+                hit_rate = (hits / total * 100) if total > 0 else 0.0
+                lat_latest = advice.get("_latest_api_latency", 0.0)
+                lat_avg = advice.get("_avg_api_latency", 0.0)
+                entropy_info = ""
+                if use_entropy_gate:
+                    entropy_info = f" | Entropy {h_norm:.3f} >= {self.entropy_threshold}"
+                print(
+                    f"[Coach Env {i}] Step {self.num_timesteps} - "
+                    f"Role: {advice.get('Role')} | "
+                    f"Masked: {forbidden} | "
+                    f"Cache: {hit_rate:.1f}% ({hits}/{total}) | "
+                    f"Latency: {lat_latest:.2f}s (Avg: {lat_avg:.2f}s)"
+                    f"{entropy_info}"
+                )
+
+            total_tokens = advice.get("_total_tokens_used", 0)
+            if self.max_token_budget and total_tokens > self.max_token_budget:
+                print(
+                    f"[Coach Env {i}] DeepSeek API Token Budget Exceeded: "
+                    f"{total_tokens} > {self.max_token_budget}. Stopping training early."
+                )
+                raise StopTrainingException(f"API Token Budget Exceeded: {total_tokens}")
+
+            self.training_env.env_method("update_mask", forbidden, indices=i)
         return True
 

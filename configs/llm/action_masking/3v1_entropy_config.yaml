@@ -1,0 +1,34 @@
+# Academy 3v1 with keeper — entropy-gated LLM action masking
+
+env_id: academy_3_vs_1_with_keeper
+scenario: 3v1
+
+# Run identifier (output directory is specified via --output-dir on the CLI)
+run_name: entropy_masking_ppo_3v1
+checkpoint_prefix: entropy_masking_ppo_3v1
+baseline_zip: entropy_masking_ppo_3v1.zip
+
+# Training
+total_timesteps: 10000000
+num_cpu: 16
+checkpoint_freq: 500000  # save every N steps (total across envs)
+
+# PPO hyperparameters (identical to baseline for fair comparison)
+learning_rate: 0.0003
+ent_coef: 0.01
+
+# Wrappers: set to null to use sparse env reward only
+reward_wrapper:
+  use_custom: false
+  use_llm_reward: false
+  llm_reward_formula: null
+
+# Coach / action masking with entropy gating
+coach_interval: 50
+use_action_masking: true
+
+# Entropy-gated masking: only apply LLM mask when policy entropy is high
+# H_norm = H(pi) / log(19); mask applied when H_norm >= entropy_threshold
+entropy_threshold: 0.6
+# Never forbid more than this many actions (out of 19 total)
+max_masked_actions: 7
