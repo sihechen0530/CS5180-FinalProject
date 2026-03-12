@@ -31,7 +31,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList, BaseCallback
 
 from core.wrappers import CustomRewardWrapper, make_dense_reward_fn, ActionMaskWrapper, LLMDenseRewardWrapper
-from core.callbacks import GRFEvalStoppingCallback, StopTrainingException
+from core.callbacks import GRFEvalStoppingCallback, StopTrainingException, ProfilingCallback
 from core.coach import GroqCoach, DeepSeekCoach, MockDeepSeekCoach
 from core.callbacks import CoachCallback
 
@@ -145,6 +145,7 @@ def main():
     parser.add_argument("--config", type=str, default="configs/3v1_config.yaml", help="Path to YAML config.")
     parser.add_argument("--output-dir", type=str, required=True, help="Directory for all run artifacts (checkpoints, tensorboard, agents). Re-use to resume.")
     parser.add_argument("--override", type=str, action="append", help="Override key=value (e.g. total_timesteps=1000).")
+    parser.add_argument("--profile", action="store_true", help="Print rollout/train timing breakdown every 30s.")
     args = parser.parse_args()
 
     config_path = args.config
@@ -263,6 +264,10 @@ def main():
         f"Eval stopping: eval_freq={eval_freq}, n_eval_episodes={n_eval_episodes}, "
         f"target_win_rate={target_win_rate:.0%}"
     )
+
+    if args.profile:
+        callbacks.append(ProfilingCallback(print_interval_sec=30.0, verbose=1))
+        print("[Profiler] Timing callback enabled (prints every 30s).")
 
     if config.get("use_action_masking", False):
         interval = config.get("coach_interval", 50)

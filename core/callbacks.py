@@ -9,6 +9,7 @@ Implements the "Threshold" strategy:
 
 import os
 import sys
+import time
 
 # Allow import when run from repo root
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,6 +121,96 @@ class GRFEvalStoppingCallback(BaseCallback):
             except Exception:
                 pass
             self._eval_env = None
+
+class ProfilingCallback(BaseCallback):
+    """
+    Periodically prints a timing breakdown of the PPO training loop:
+      - Rollout collection time  (env simulation + wrapper overhead)
+      - Training/update time     (neural-net gradient steps)
+      - FPS (env steps / wall second)
+      - Average episode length
+
+    SB3 PPO alternates:
+        collect_rollouts()  →  _on_rollout_start .. each _on_step .. _on_rollout_end
+        train()             →  between _on_rollout_end and next _on_rollout_start
+
+    Args:
+        print_interval_sec: print a summary every this many wall-clock seconds.
+    """
+
+    def __init__(self, print_interval_sec: float = 30.0, verbose: int = 1):
+        super().__init__(verbose=verbose)
+        self.print_interval_sec = print_interval_sec
+
+        self._t_rollout_start: float = 0.0
+        self._t_train_start: float = 0.0
+        self._t_last_print: float = 0.0
+
+        # Accumulators since last print
+        self._rollout_sec: float = 0.0
+        self._train_sec: float = 0.0
+        self._steps_since_print: int = 0
+        self._rollouts_since_print: int = 0
+
+    def _on_training_start(self) -> None:
+        now = time.perf_counter()
+        self._t_rollout_start = now
+        self._t_last_print = now
+
+    def _on_rollout_start(self) -> None:
+        # Beginning of env-collection phase — end of NN training phase
+        now = time.perf_counter()
+        if self._t_train_start > 0:
+            self._train_sec += now - self._t_train_start
+        self._t_rollout_start = now
+
+    def _on_step(self) -> bool:
+        self._steps_since_print += 1
+        return True
+
+    def _on_rollout_end(self) -> None:
+        # End of env-collection phase — start of NN training phase
+        now = time.perf_counter()
+        self._rollout_sec += now - self._t_rollout_start
+        self._rollouts_since_print += 1
+        self._t_train_start = now
+
+        elapsed_since_print = now - self._t_last_print
+        if elapsed_since_print >= self.print_interval_sec:
+            self._print_summary(elapsed_since_print)
+            # Reset accumulators
+            self._rollout_sec = 0.0
+            self._train_sec = 0.0
+            self._steps_since_print = 0
+            self._rollouts_since_print = 0
+            self._t_last_print = now
+
+    def _print_summary(self, wall_sec: float) -> None:
+        total_measured = self._rollout_sec + self._train_sec
+        if total_measured == 0:
+            return
+
+        fps = self._steps_since_print / wall_sec if wall_sec > 0 else 0.0
+        rollout_pct = 100.0 * self._rollout_sec / total_measured
+        train_pct = 100.0 * self._train_sec / total_measured
+
+        # Episode length from Monitor info stored in locals
+        ep_lens = []
+        infos = self.locals.get("infos", []) if self.locals else []
+        for info in infos:
+            if isinstance(info, dict) and "episode" in info:
+                ep_lens.append(info["episode"]["l"])
+        avg_ep_len = f"{sum(ep_lens)/len(ep_lens):.0f}" if ep_lens else "n/a"
+
+        print(
+            f"[Profiler] step={self.model.num_timesteps:,} | "
+            f"FPS={fps:.0f} | "
+            f"rollout={self._rollout_sec:.1f}s ({rollout_pct:.0f}%) | "
+            f"train={self._train_sec:.1f}s ({train_pct:.0f}%) | "
+            f"avg_ep_len={avg_ep_len} | "
+            f"rollouts={self._rollouts_since_print}"
+        )
+
 
 class CoachCallback(BaseCallback):
     """
