@@ -13,6 +13,7 @@ import threading
 import collections
 import json
 import time
+from datetime import datetime, timedelta
 
 
 GAME_MODE_NAMES = ["Normal", "Kick-Off", "Goal Kick", "Free Kick", "Corner", "Throw-In", "Penalty"]
@@ -319,22 +320,41 @@ class DeepSeekCoach:
             advice["_avg_api_latency"] = self.total_api_latency / max(1, self.total_api_calls)
             return advice
 
+# Models ordered by preference. When a model's daily token quota is exhausted,
+# the coach automatically falls back to the next model in the list.
+# Free-tier daily token limits (TPD) as of 2026-03:
+#   llama-3.3-70b-versatile : 100K  (better reasoning, preferred)
+#   llama-3.1-8b-instant    : 500K  (highest free quota, fallback)
+GROQ_MODEL_PRIORITY = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+]
+
+
 class GroqCoach:
     """
     Production service for Groq API integration (e.g., Llama 3).
     Queries the LLM with the game narrative to determine tactical roles and Action Masks.
     Uses asynchronous API calls and caching to prevent blocking the training loop,
     and leverages context caching by splitting the system and user prompts.
+
+    Automatically falls back to the next model in GROQ_MODEL_PRIORITY when a model's
+    daily free-tier token quota is exhausted (RateLimitError mentioning "day").
     """
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, api_key: str, model: str = GROQ_MODEL_PRIORITY[0]):
         try:
-            from groq import Groq
+            import groq as _groq
         except ImportError:
             raise ImportError("Please install the `groq` package to use the Groq API.")
-            
+
+        self._groq = _groq
         self.narrator = GRFNarrator()
-        self.client = Groq(api_key=api_key)
-        self.model = model
+        self.client = _groq.Groq(api_key=api_key)
+
+        # Priority list: caller's preferred model first, then remaining fallbacks
+        self._model_priority = [model] + [m for m in GROQ_MODEL_PRIORITY if m != model]
+        self._model_exhausted_until: dict = {}  # model -> datetime when quota resets
+        self.model = model  # kept for external inspection / logging
         self.total_tokens_used = 0
         self.total_api_calls = 0
         self.total_api_latency = 0.0
@@ -358,12 +378,24 @@ class GroqCoach:
         self.pending_requests = set()
         self.lock = threading.Lock()
 
+    def _active_model(self) -> str:
+        """Return the first non-exhausted model. Caller must hold self.lock."""
+        now = datetime.now()
+        for m in self._model_priority:
+            if now >= self._model_exhausted_until.get(m, datetime.min):
+                return m
+        # All models exhausted — return the one whose quota resets soonest
+        return min(self._model_priority, key=lambda m: self._model_exhausted_until[m])
+
     def _fetch_advice_async(self, narrative: str):
+        with self.lock:
+            model = self._active_model()
+
         prompt = COACH_USER_PROMPT_TEMPLATE.format(narrative=narrative)
         try:
             start_time = time.time()
             response = self.client.chat.completions.create(
-                model=self.model,
+                model=model,
                 messages=[
                     {"role": "system", "content": COACH_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
@@ -373,33 +405,48 @@ class GroqCoach:
                 temperature=0.0
             )
             elapsed_time = time.time() - start_time
-            
+
             raw_content = response.choices[0].message.content
             advice = json.loads(raw_content)
-            
+
             with self.lock:
                 self.total_api_calls += 1
                 self.total_api_latency += elapsed_time
                 self.latest_api_latency = elapsed_time
+                self.model = model  # reflect active model
 
                 if getattr(response, "usage", None):
                     self.total_tokens_used += response.usage.total_tokens
-                
+
                 # Basic validation
                 if "Role" not in advice:
-                     advice["Role"] = "Unknown"
+                    advice["Role"] = "Unknown"
                 if "Forbidden_Actions" not in advice:
-                     advice["Forbidden_Actions"] = []
-                     
+                    advice["Forbidden_Actions"] = []
+
                 advice["_tokens_used_this_call"] = response.usage.total_tokens if getattr(response, "usage", None) else 0
                 advice["_total_tokens_used"] = self.total_tokens_used
-                
+
                 self.advice_cache[narrative] = advice
                 if len(self.advice_cache) > self.cache_size:
                     self.advice_cache.popitem(last=False)
-                    
+
                 self.latest_advice = advice
-                
+
+        except self._groq.RateLimitError as e:
+            msg = str(e).lower()
+            is_daily = "day" in msg or "per_day" in msg
+            with self.lock:
+                if is_daily:
+                    reset_at = datetime.now() + timedelta(hours=24)
+                    self._model_exhausted_until[model] = reset_at
+                    next_model = self._active_model()
+                    print(f"[GroqCoach] Daily token quota exhausted for '{model}'. "
+                          f"Switching to '{next_model}' (resets ~{reset_at.strftime('%H:%M')})")
+                else:
+                    # Tokens-per-minute limit — transient, don't blacklist the model
+                    print(f"[GroqCoach] Rate limit (TPM) for '{model}': {e}")
+
         except Exception as e:
             print(f"[GroqCoach] API Error: {e}")
         finally:
