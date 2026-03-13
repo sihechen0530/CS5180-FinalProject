@@ -1,15 +1,16 @@
 #!/bin/bash
 #
 # Usage:
-#   sbatch slurm_grf_job.sh train configs/empty_config.yaml [output_dir]
-#   sbatch slurm_grf_job.sh eval  configs/empty_config.yaml <output_dir> [--agent path/to/ppo.zip]
+#   sbatch slurm_grf_job.sh train      configs/empty_config.yaml [output_dir]
+#   sbatch slurm_grf_job.sh eval       configs/empty_config.yaml <output_dir> [--agent path/to/ppo.zip]
+#   sbatch slurm_grf_job.sh iterative  configs/llm/iter_reward/empty_config.yaml [output_dir]
 #
-# Train: If output_dir is omitted, outputs/<SLURM_JOB_ID> is used. All run
-# artifacts and Slurm logs go under that directory.
+# Train: Single-run training (train.py). If output_dir omitted, outputs/<SLURM_JOB_ID>.
 #
-# Eval: output_dir (3rd arg) is required — you must point to an existing run
-# (e.g. outputs/12345 or outputs/my_run). Evaluation log and Slurm job log
-# are both written under that directory (logs/). No separate folder is created.
+# Eval: output_dir required. Logs under that directory (logs/).
+#
+# Iterative: Eureka-style multi-round reward (train_iterative_reward.py). Same output layout
+# as train for easy comparison. Optional env: ITER_NUM_ITERATIONS, ITER_STEPS_PER_ITERATION.
 #
 #SBATCH --job-name=grf
 #SBATCH --partition=short
@@ -58,6 +59,7 @@ mkdir -p "${OUTPUT_DIR}/logs" "${OUTPUT_DIR}/videos"
 LOG_DIR="${OUTPUT_DIR}/logs"
 TRAIN_LOG="${LOG_DIR}/train_${SLURM_JOB_ID}.log"
 EVAL_LOG="${LOG_DIR}/eval_${SLURM_JOB_ID}.log"
+ITER_LOG="${LOG_DIR}/iterative_${SLURM_JOB_ID}.log"
 
 echo "REPO_ROOT=${REPO_ROOT}"
 echo "MODE=${MODE}"
@@ -89,8 +91,17 @@ elif [[ "${MODE}" == "eval" ]]; then
   echo "Command: ${CMD[*]}"
   "${CMD[@]}" > "${EVAL_LOG}" 2>&1
 
+elif [[ "${MODE}" == "iterative" ]]; then
+  echo "Starting iterative reward optimization; log -> ${ITER_LOG}"
+  CMD=(python3 scripts/train_iterative_reward.py --config "${CONFIG_REL}" --output-dir "${OUTPUT_DIR}")
+  [[ -n "${ITER_NUM_ITERATIONS:-}" ]] && CMD+=(--num-iterations "${ITER_NUM_ITERATIONS}")
+  [[ -n "${ITER_STEPS_PER_ITERATION:-}" ]] && CMD+=(--steps-per-iteration "${ITER_STEPS_PER_ITERATION}")
+  [[ -n "${ITER_EVAL_EPISODES:-}" ]] && CMD+=(--eval-episodes "${ITER_EVAL_EPISODES}")
+  echo "Command: ${CMD[*]}"
+  "${CMD[@]}" > "${ITER_LOG}" 2>&1
+
 else
-  echo "Unknown MODE='${MODE}'. Use 'train' or 'eval'." >&2
+  echo "Unknown MODE='${MODE}'. Use 'train', 'eval', or 'iterative'." >&2
   exit 1
 fi
 
