@@ -212,6 +212,58 @@ Follow all constraints and output ONLY the Python function."""
 
 
 # ---------------------------------------------------------------------------
+# Eureka-style refinement: improve reward using training reflection
+# ---------------------------------------------------------------------------
+
+REWARD_REFINE_SYSTEM_PROMPT = """You are an expert RL engineer. You previously wrote a dense reward function for Google Research Football. After training with that reward, we collected the following evaluation statistics. Your task is to IMPROVE the reward function based on this feedback.
+
+Rules:
+1. Output ONLY the revised Python function. Same signature: def llm_reward_formula(env_reward, features, prev_features) -> float
+2. Keep all constraints: no imports, return float, preserve env_reward, dense magnitude 0.01-0.1
+3. Address the issues suggested in the reflection. Common fixes:
+   - Low win rate: strengthen ball-progress shaping or shooting incentives
+   - High win rate but long episodes: reward efficiency, discourage stalling
+   - Unstable training: reduce shaping magnitude or simplify
+4. Do not repeat the same reward logic that led to poor results; try a different emphasis."""
+
+REWARD_REFINE_USER_TEMPLATE = """## Scenario
+{scenario_context}
+
+## Previous reward function (iteration {iteration})
+```python
+{previous_code}
+```
+
+## Training results (after {steps_per_iteration} steps)
+{reflection}
+
+## Your task
+Revise the reward function to improve performance. Output ONLY the new Python function, no explanation."""
+
+
+def build_reflection_text(stats: dict, steps_per_iteration: int) -> str:
+    """Build reflection text for LLM from training/eval stats (Eureka-style)."""
+    lines = [
+        f"- Training steps: {steps_per_iteration}",
+        f"- Eval win rate: {stats.get('eval_win_rate', 0):.1%} (fraction of eval episodes with a goal)",
+        f"- Eval mean return: {stats.get('eval_mean_return', 0):.3f} (sparse reward per episode)",
+        f"- Eval mean episode length: {stats.get('eval_mean_episode_len', 0):.1f} steps",
+    ]
+    if "eval_n_episodes" in stats:
+        lines.append(f"- Eval episodes: {stats['eval_n_episodes']}")
+    # Add short interpretation hints for the LLM
+    win_rate = stats.get("eval_win_rate", 0)
+    mean_ret = stats.get("eval_mean_return", 0)
+    if win_rate < 0.2:
+        lines.append("\nInterpretation: Win rate is low. Consider stronger shaping toward scoring (e.g. ball progress, shooting bonus when close).")
+    elif win_rate > 0.8:
+        lines.append("\nInterpretation: Win rate is good. Consider rewarding faster scoring or penalizing long episodes.")
+    else:
+        lines.append("\nInterpretation: Moderate win rate. Consider tuning shaping weights or phase-aware logic.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # RewardGenerator Class
 # ---------------------------------------------------------------------------
 
@@ -308,6 +360,68 @@ class RewardGenerator:
         # Validate and compile
         func, error = self._compile_and_validate(code)
 
+        return {"code": code, "function": func, "error": error, "usage": usage}
+
+    def refine(
+        self,
+        previous_code: str,
+        reflection: str,
+        scenario: str = None,
+        iteration: int = 1,
+        steps_per_iteration: int = 0,
+        temperature: float = 0.2,
+    ) -> dict:
+        """
+        Eureka-style: refine reward function using training reflection.
+
+        Args:
+            previous_code: The previous reward function source code
+            reflection: Text summary of training stats (from build_reflection_text)
+            scenario: Scenario name for context
+            iteration: Current iteration index (1-based)
+            steps_per_iteration: Training steps that produced this reflection
+            temperature: LLM temperature
+
+        Returns:
+            Same dict as generate(): code, function, error, usage
+        """
+        scenario_context = ""
+        if scenario:
+            scenario_context = SCENARIO_CONTEXTS.get(
+                scenario, SCENARIO_CONTEXTS.get(scenario.lower(), "")
+            )
+
+        user_content = REWARD_REFINE_USER_TEMPLATE.format(
+            scenario_context=scenario_context,
+            previous_code=previous_code.strip(),
+            iteration=iteration,
+            steps_per_iteration=steps_per_iteration,
+            reflection=reflection,
+        )
+
+        messages = [
+            {"role": "system", "content": REWARD_REFINE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=1200,
+                temperature=temperature,
+            )
+            raw_code = response.choices[0].message.content.strip()
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+            }
+        except Exception as e:
+            return {"code": None, "function": None, "error": f"API Error: {e}", "usage": {}}
+
+        code = self._extract_code(raw_code)
+        func, error = self._compile_and_validate(code)
         return {"code": code, "function": func, "error": error, "usage": usage}
 
     def _extract_code(self, raw: str) -> str:
