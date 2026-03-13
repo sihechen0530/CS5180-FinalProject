@@ -1,0 +1,28 @@
+# Iterative (Eureka-style) reward optimization — 3v1 with keeper
+# Use with: python scripts/train_iterative_reward.py --config configs/llm/iter_reward/3v1_config.yaml --output-dir outputs/iter_3v1
+# Or submit via your own job script; do not use slurm_grf_job.sh train (that runs single-run train.py).
+
+env_id: academy_3_vs_1_with_keeper
+scenario: 3v1
+
+run_name: iter_reward_3v1
+num_cpu: 16
+checkpoint_freq: 500000
+
+learning_rate: 0.0003
+ent_coef: 0.01
+
+reward_wrapper:
+  use_custom: false
+  use_llm_reward: true
+  # Ignored by train_iterative_reward (rewards written to output_dir/rewards/iter_*.py)
+  llm_reward_file: rewards/3v1_default.py
+
+coach_interval: 50
+use_action_masking: false
+
+# Eureka-style: number of refinement rounds and steps per round
+iterative:
+  num_iterations: 3
+  steps_per_iteration: 100000
+  eval_episodes: 50

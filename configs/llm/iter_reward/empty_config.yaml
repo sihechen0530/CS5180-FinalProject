@@ -1,0 +1,28 @@
+# Iterative (Eureka-style) reward optimization — empty goal
+# Use with: python scripts/train_iterative_reward.py --config configs/llm/iter_reward/empty_config.yaml --output-dir outputs/iter_empty
+# Or submit via your own job script; do not use slurm_grf_job.sh train (that runs single-run train.py).
+
+env_id: academy_empty_goal_close
+scenario: empty_goal
+
+run_name: iter_reward_empty_goal
+num_cpu: 1
+checkpoint_freq: 50000
+
+learning_rate: 0.0003
+ent_coef: 0.01
+
+reward_wrapper:
+  use_custom: false
+  use_llm_reward: true
+  # Ignored by train_iterative_reward (rewards written to output_dir/rewards/iter_*.py)
+  llm_reward_file: rewards/empty_goal_default.py
+
+coach_interval: 50
+use_action_masking: false
+
+# Eureka-style: number of refinement rounds and steps per round
+iterative:
+  num_iterations: 3
+  steps_per_iteration: 20000
+  eval_episodes: 50
