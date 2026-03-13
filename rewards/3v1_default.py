@@ -1,67 +1,78 @@
 """
-LLM-generated reward function for GRF.
+Fixed reward function for 3v1 with keeper.
 
-Task: (default comprehensive reward)
-Scenario: 3v1
-
-Usage in config YAML:
-  reward_wrapper:
-    use_llm_reward: true
-    llm_reward_file: rewards/3v1_default.py
+Key fixes:
+1. Remove all non-potential-based (per-step) bonuses → eliminate reward hacking
+2. Add explicit shooting incentive in attacking zone
+3. Use time penalty to discourage stalling
+4. Keep all shaping as deltas (potential-based)
 """
 
 def llm_reward_formula(env_reward, features, prev_features):
     reward = float(env_reward)
-    
-    # 1. Ball progress (potential-based)
-    delta_dist = prev_features.get("ball_dist_to_goal", 1.0) - features.get("ball_dist_to_goal", 1.0)
-    reward += 0.05 * delta_dist
-    
-    # 2. Possession bonus
-    if features.get("ball_owned_team", -1) == 0:
-        reward += 0.01
-    
-    # 3. Phase-aware logic
+
     ball_x = features.get("ball_x", 0.0)
-    
-    # Defensive third (ball_x < -0.33): safe possession
-    if ball_x < -0.33:
-        # Small penalty for losing possession in defensive third
-        if prev_features.get("ball_owned_team", -1) == 0 and features.get("ball_owned_team", -1) != 0:
-            reward -= 0.02
-    
-    # Midfield (-0.33 <= ball_x <= 0.33): progression
-    elif ball_x <= 0.33:
-        # Extra reward for moving ball forward in midfield
-        delta_x = features.get("ball_x", 0.0) - prev_features.get("ball_x", 0.0)
-        if delta_x > 0:
-            reward += 0.02 * delta_x
-    
-    # Attacking third (ball_x > 0.33): shooting opportunities
-    else:
-        # Bonus for being in shooting position
-        reward += 0.01
-        
-        # Consider keeper position when shooting
-        keeper_x = features.get("right_team_xs", [0.0])[0]
-        keeper_y = features.get("right_team_ys", [0.0])[0]
+    ball_owned = features.get("ball_owned_team", -1)
+
+    # -------------------------------------------------------------------------
+    # 1. Ball-to-goal progress (potential-based, always active)
+    #    This is the primary shaping signal.
+    # -------------------------------------------------------------------------
+    delta_dist = (
+        prev_features.get("ball_dist_to_goal", 1.0)
+        - features.get("ball_dist_to_goal", 1.0)
+    )
+    reward += 0.08 * delta_dist
+
+    # -------------------------------------------------------------------------
+    # 2. Possession CHANGE reward (NOT per-step bonus)
+    #    Only reward the moment of gaining possession, not holding it.
+    # -------------------------------------------------------------------------
+    prev_owned = prev_features.get("ball_owned_team", -1)
+    if prev_owned != 0 and ball_owned == 0:
+        reward += 0.02  # gained possession
+    elif prev_owned == 0 and ball_owned != 0:
+        reward -= 0.03  # lost possession
+
+    # -------------------------------------------------------------------------
+    # 3. Time/step penalty (small but crucial for 3v1)
+    #    Forces agent to act decisively instead of stalling.
+    # -------------------------------------------------------------------------
+    reward -= 0.002
+
+    # -------------------------------------------------------------------------
+    # 4. Shooting zone incentive (potential-based, NOT constant)
+    #    Reward ENTERING the shooting zone, not staying in it.
+    #    Use ball_x crossing a threshold as a one-time-ish signal.
+    # -------------------------------------------------------------------------
+    prev_ball_x = prev_features.get("ball_x", 0.0)
+
+    # Reward crossing into deep attacking zone (ball_x > 0.7)
+    if ball_x > 0.7 and prev_ball_x <= 0.7 and ball_owned == 0:
+        reward += 0.03
+
+    # -------------------------------------------------------------------------
+    # 5. Keeper-avoidance shaping (potential-based)
+    #    In attacking third, reward moving ball to be far from keeper.
+    #    Only when we have the ball to avoid rewarding random bounces.
+    # -------------------------------------------------------------------------
+    if ball_x > 0.5 and ball_owned == 0:
         ball_y = features.get("ball_y", 0.0)
-        
-        # Reward moving ball away from keeper horizontally
-        keeper_horiz_dist = abs(ball_y - keeper_y)
-        prev_keeper_dist = abs(prev_features.get("ball_y", 0.0) - prev_features.get("right_team_ys", [0.0])[0])
-        reward += 0.02 * (keeper_horiz_dist - prev_keeper_dist)
-    
-    # 4. Team coordination (3 vs 1 scenario)
-    if features.get("ball_owned_team", -1) == 0:
-        # Reward teammates supporting the ball carrier
-        prev_prox = prev_features.get("teammate_proximity_to_ball", 1.0)
-        curr_prox = features.get("teammate_proximity_to_ball", 1.0)
-        delta_prox = prev_prox - curr_prox
-        reward += 0.015 * delta_prox
-        
-        # Small penalty for clustering (encourage spreading)
-        if curr_prox < 0.2:  # Very close clustering
-            reward -= 0.005
-    
+        keeper_y = features.get("right_team_ys", [0.0])[0]
+
+        curr_keeper_dist = abs(ball_y - keeper_y)
+        prev_keeper_dist = abs(
+            prev_features.get("ball_y", 0.0)
+            - prev_features.get("right_team_ys", [0.0])[0]
+        )
+        reward += 0.03 * (curr_keeper_dist - prev_keeper_dist)
+
+    # -------------------------------------------------------------------------
+    # 6. Ball height penalty (discourage aimless lobs)
+    #    Slightly penalize high balls that aren't shots on goal.
+    # -------------------------------------------------------------------------
+    ball_z = features.get("ball_z", 0.0)
+    if ball_z > 0.5 and ball_x < 0.8:
+        reward -= 0.005
+
     return reward
