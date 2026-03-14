@@ -57,6 +57,57 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _make_env_subprocess(env_id: str, rank: int, seed: int, reward_config: dict):
+    """
+    Build GRF env inside a subprocess. Only primitives (str, int, dict) are passed in,
+    so this callable is picklable and never serializes PyCapsule/GRF objects.
+    Imports gfootball and wrappers only when called (in the worker process).
+    """
+    import gfootball.env as football_env
+    from stable_baselines3.common.monitor import Monitor
+    from core.wrappers import ActionMaskWrapper, LLMDenseRewardWrapper
+
+    env = football_env.create_environment(
+        env_name=env_id,
+        stacked=False,
+        representation="simple115",
+        rewards="scoring",
+        write_video=False,
+        write_full_episode_dumps=False,
+        render=False,
+    )
+    env = Monitor(env)
+
+    if reward_config.get("use_llm_reward"):
+        reward_file = reward_config.get("llm_reward_file")
+        reward_func = None
+        if reward_file and os.path.isabs(reward_file):
+            try:
+                with open(reward_file, "r") as f:
+                    formula_str = f.read()
+                local_env = {}
+                exec(formula_str, {"__builtins__": __builtins__}, local_env)
+                if "llm_reward_formula" in local_env:
+                    reward_func = local_env["llm_reward_formula"]
+            except Exception as e:
+                print(f"[rank {rank}] Failed to load reward from '{reward_file}': {e}")
+        if reward_func is None:
+            formula_str = reward_config.get("llm_reward_formula")
+            if formula_str:
+                try:
+                    local_env = {}
+                    exec(formula_str, {"__builtins__": __builtins__}, local_env)
+                    if "llm_reward_formula" in local_env:
+                        reward_func = local_env["llm_reward_formula"]
+                except Exception as e:
+                    print(f"[rank {rank}] Failed to compile LLM reward formula: {e}")
+        env = LLMDenseRewardWrapper(env, reward_formula=reward_func)
+
+    env = ActionMaskWrapper(env)
+    env.seed(seed + rank)
+    return env
+
+
 def run_training_segment(
     config: dict,
     reward_file_abs: str,
@@ -72,10 +123,7 @@ def run_training_segment(
     import yaml
     import gym
     from sb3_contrib import MaskablePPO
-    from stable_baselines3.common.vec_env import DummyVecEnv
-
-    train_mod = _load_train_module()
-    make_env = train_mod.make_env
+    from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 
     env_id = config["env_id"]
     num_cpu = config.get("num_cpu", 1)
@@ -85,9 +133,17 @@ def run_training_segment(
     reward_config["llm_reward_file"] = reward_file_abs
     reward_config["llm_reward_formula"] = None
 
-    # Use DummyVecEnv only: GRF (and wrappers) contain non-pickleable C extensions (PyCapsule),
-    # so SubprocVecEnv would fail when spawning worker processes.
-    env = DummyVecEnv([make_env(env_id, i, 0, reward_config) for i in range(num_cpu)])
+    # SubprocVecEnv: pass only a picklable callable (no GRF/wrappers in closure).
+    # Each worker builds env via _make_env_subprocess(env_id, rank, seed, reward_config) inside the subprocess.
+    def _env_factory(rank: int):
+        def _build():
+            return _make_env_subprocess(env_id, rank, 0, reward_config)
+        return _build
+
+    if num_cpu > 1:
+        env = SubprocVecEnv([_env_factory(i) for i in range(num_cpu)])
+    else:
+        env = DummyVecEnv([_env_factory(0)])
 
     model = MaskablePPO(
         "MlpPolicy",
