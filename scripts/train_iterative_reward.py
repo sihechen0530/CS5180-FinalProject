@@ -72,11 +72,10 @@ def run_training_segment(
     import yaml
     import gym
     from sb3_contrib import MaskablePPO
-    from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
+    from stable_baselines3.common.vec_env import DummyVecEnv
 
     train_mod = _load_train_module()
     make_env = train_mod.make_env
-    EnvBuilder = train_mod.EnvBuilder
 
     env_id = config["env_id"]
     num_cpu = config.get("num_cpu", 1)
@@ -86,10 +85,9 @@ def run_training_segment(
     reward_config["llm_reward_file"] = reward_file_abs
     reward_config["llm_reward_formula"] = None
 
-    if num_cpu > 1:
-        env = SubprocVecEnv([make_env(env_id, i, 0, reward_config) for i in range(num_cpu)])
-    else:
-        env = DummyVecEnv([make_env(env_id, 0, 0, reward_config)])
+    # Use DummyVecEnv only: GRF (and wrappers) contain non-pickleable C extensions (PyCapsule),
+    # so SubprocVecEnv would fail when spawning worker processes.
+    env = DummyVecEnv([make_env(env_id, i, 0, reward_config) for i in range(num_cpu)])
 
     model = MaskablePPO(
         "MlpPolicy",
