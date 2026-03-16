@@ -194,7 +194,9 @@ def main():
         _orig_policy_init(self, *args, **kwargs)
     MaskableActorCriticPolicy.__init__ = _compat_policy_init
     try:
-        model = MaskablePPO.load(model_path)
+        # Force CPU inference for visualization so we don't depend on GPU
+        # CUDA capability matching the training environment.
+        model = MaskablePPO.load(model_path, device="cpu")
     finally:
         MaskableActorCriticPolicy.__init__ = _orig_policy_init  # restore
 
