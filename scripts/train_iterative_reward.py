@@ -120,10 +120,12 @@ def run_training_segment(
     Run RL for `steps` with reward from `reward_file_abs`. No checkpoint resume; fresh model.
     Returns eval stats: eval_win_rate, eval_mean_return, eval_mean_episode_len, eval_n_episodes.
     """
-    import yaml
     import gym
     from sb3_contrib import MaskablePPO
     from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
+    from stable_baselines3.common.callbacks import CallbackList
+
+    from core.callbacks import GRFEvalStoppingCallback, StopTrainingException
 
     env_id = config["env_id"]
     num_cpu = config.get("num_cpu", 1)
@@ -145,16 +147,49 @@ def run_training_segment(
     else:
         env = DummyVecEnv([_env_factory(0)])
 
+    # Tensorboard logging (per-iteration run name)
+    iter_run_name = f"{config.get('run_name', 'iter_run')}_seg{segment_id}"
+    tb_log = os.path.join(output_dir, "tensorboard", iter_run_name)
+    os.makedirs(tb_log, exist_ok=True)
+
     model = MaskablePPO(
         "MlpPolicy",
         env,
-        verbose=0,
+        verbose=1,
+        tensorboard_log=tb_log,
         learning_rate=config.get("learning_rate", 0.0003),
         ent_coef=config.get("ent_coef", 0.01),
     )
 
-    model.learn(total_timesteps=steps)
-    # Eval: scoring-only env, deterministic
+    # Eval callback (same behaviour as train.py, but scoped to this segment)
+    eval_cfg = (config.get("eval_stopping") or {}).copy()
+    eval_freq = int(eval_cfg.get("eval_freq", max(steps // 10, 1)))
+    n_eval_episodes = int(eval_cfg.get("n_eval_episodes", eval_episodes))
+    target_win_rate = float(eval_cfg.get("target_win_rate", 0.95))
+
+    callbacks = [
+        GRFEvalStoppingCallback(
+            env_id=env_id,
+            eval_freq=eval_freq,
+            n_eval_episodes=n_eval_episodes,
+            target_win_rate=target_win_rate,
+            verbose=1,
+        )
+    ]
+    cb = CallbackList(callbacks)
+
+    print(
+        f"[Iter {segment_id}] Eval callback: "
+        f"eval_freq={eval_freq}, n_eval_episodes={n_eval_episodes}, "
+        f"target_win_rate={target_win_rate:.0%}"
+    )
+
+    try:
+        model.learn(total_timesteps=steps, callback=cb)
+    except StopTrainingException as e:
+        print(f"[Iter {segment_id}] Early stopping: {e}")
+
+    # Post-training eval for reflection (scoring-only env, deterministic)
     eval_stats = _run_eval(model, env_id, eval_episodes)
     env.close()
     return eval_stats
