@@ -30,7 +30,10 @@ reward_wrapper:
 
   # LLM Reward Injection (from generated file)
   use_llm_reward: true
-  llm_reward_file: rewards/3v1_default.py
+  # Baseline: original one-shot reward
+  # llm_reward_file: rewards/3v1_default.py
+  # Experiment: use final reward from iterative run 5089678
+  llm_reward_file: outputs/5089678/rewards/final.py
 
 # Coach / action masking (Direction B): call every N steps
 coach_interval: 50
