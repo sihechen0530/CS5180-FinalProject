@@ -24,6 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EVAL_PATTERN = re.compile(
     r'\[Eval\] step=(\d+) win_rate=([0-9.]+)%'
 )
+# SB3 training table metrics, e.g.:
+# |    ep_len_mean          | 71.8        |
+# |    ep_rew_mean          | 0.01        |
+# |    total_timesteps      | 131072      |
+TOTAL_STEPS_PATTERN = re.compile(r'total_timesteps\s*\|\s*([0-9]+)')
+EP_LEN_PATTERN = re.compile(r'ep_len_mean\s*\|\s*([0-9.]+)')
+EP_REW_PATTERN = re.compile(r'ep_rew_mean\s*\|\s*([0-9.+-eE]+)')
 
 
 def parse_eval_lines(log_path, step_offset=0):
@@ -70,6 +77,67 @@ def load_all_eval_data(run_a_log_dir, run_b_log_dir):
     run_b_data = sorted(set(run_b_data), key=lambda x: x[0])
 
     return run_a_data, run_b_data
+
+
+def parse_episode_stats(log_path):
+    """
+    Extract (total_timesteps, ep_len_mean) and (total_timesteps, ep_rew_mean)
+    from SB3 training tables in a log file.
+    """
+    len_data = []
+    rew_data = []
+    if not log_path.exists():
+        return len_data, rew_data
+
+    current_step = None
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m_step = TOTAL_STEPS_PATTERN.search(line)
+            if m_step:
+                current_step = int(m_step.group(1))
+                continue
+            if current_step is None:
+                continue
+            m_len = EP_LEN_PATTERN.search(line)
+            if m_len:
+                try:
+                    ep_len = float(m_len.group(1))
+                    len_data.append((current_step, ep_len))
+                except ValueError:
+                    pass
+                continue
+            m_rew = EP_REW_PATTERN.search(line)
+            if m_rew:
+                try:
+                    ep_rew = float(m_rew.group(1))
+                    rew_data.append((current_step, ep_rew))
+                except ValueError:
+                    pass
+                continue
+
+    return len_data, rew_data
+
+
+def load_all_episode_stats(run_a_log_dir, run_b_log_dir):
+    """Scan logs and collect episode length / reward stats for both runs."""
+    def scan_dir(log_dir):
+        log_dir = Path(log_dir)
+        all_len = []
+        all_rew = []
+        if not log_dir.exists():
+            return all_len, all_rew
+        for f in sorted(log_dir.glob("*.log")):
+            l, r = parse_episode_stats(f)
+            all_len.extend(l)
+            all_rew.extend(r)
+        # sort and deduplicate
+        all_len = sorted(set(all_len), key=lambda x: x[0])
+        all_rew = sorted(set(all_rew), key=lambda x: x[0])
+        return all_len, all_rew
+
+    a_len, a_rew = scan_dir(run_a_log_dir)
+    b_len, b_rew = scan_dir(run_b_log_dir)
+    return a_len, a_rew, b_len, b_rew
 
 
 def fig1_learning_curves(run_a_data, run_b_data, label_a, label_b, figures_dir):
@@ -243,6 +311,36 @@ def fig3_convergence_speed(run_a_data, run_b_data, label_a, label_b, figures_dir
     print(f"[Fig 3] Saved: convergence_speed.png")
 
 
+def fig4_episode_length(run_a_len, run_b_len, label_a, label_b, figures_dir):
+    """Episode length over time (helps diagnose reward hacking / exploration)."""
+    if not run_a_len and not run_b_len:
+        print("[Fig 4] No episode length data found, skipping.")
+        return
+
+    fig, ax = plt.subplots(figsize=(13, 5))
+
+    if run_a_len:
+        a_steps = [s / 1e6 for s, _ in run_a_len]
+        a_len = [v for _, v in run_a_len]
+        ax.plot(a_steps, a_len, color="#1565C0", linewidth=2, label=f"{label_a} ep_len_mean")
+
+    if run_b_len:
+        b_steps = [s / 1e6 for s, _ in run_b_len]
+        b_len = [v for _, v in run_b_len]
+        ax.plot(b_steps, b_len, color="#C62828", linewidth=2, label=f"{label_b} ep_len_mean")
+
+    ax.set_xlabel("Training Steps (millions)", fontsize=12)
+    ax.set_ylabel("Episode Length (steps)", fontsize=12)
+    ax.set_title("Episode Length Over Training", fontsize=13)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=11)
+
+    fig.tight_layout()
+    fig.savefig(figures_dir / "episode_length.png", dpi=150)
+    plt.close(fig)
+    print(f"[Fig 4] Saved: episode_length.png")
+
+
 def _interp_at(sorted_data, step):
     """Linear interpolation of win rate at a given step."""
     if not sorted_data:
@@ -317,15 +415,18 @@ def main():
     print(f"Output directory: {figures_dir}")
 
     run_a_data, run_b_data = load_all_eval_data(args.run_a_log_dir, args.run_b_log_dir)
+    a_len, a_rew, b_len, b_rew = load_all_episode_stats(args.run_a_log_dir, args.run_b_log_dir)
 
     if not run_a_data and not run_b_data:
-        print("ERROR: No evaluation data found in any log file.")
-        sys.exit(1)
+        print("WARNING: No [Eval] lines found; win-rate plots will be empty.")
+    else:
+        fig1_learning_curves(run_a_data, run_b_data, args.label_a, args.label_b, figures_dir)
+        fig2_performance_gap(run_a_data, run_b_data, args.label_a, args.label_b, figures_dir)
+        fig3_convergence_speed(run_a_data, run_b_data, args.label_a, args.label_b, figures_dir)
+        print_summary(run_a_data, run_b_data, args.label_a, args.label_b)
 
-    fig1_learning_curves(run_a_data, run_b_data, args.label_a, args.label_b, figures_dir)
-    fig2_performance_gap(run_a_data, run_b_data, args.label_a, args.label_b, figures_dir)
-    fig3_convergence_speed(run_a_data, run_b_data, args.label_a, args.label_b, figures_dir)
-    print_summary(run_a_data, run_b_data, args.label_a, args.label_b)
+    # Always try to plot episode length; often more informative when win rate is flat.
+    fig4_episode_length(a_len, b_len, args.label_a, args.label_b, figures_dir)
     print(f"\nAll figures saved to: {figures_dir}")
 
 
