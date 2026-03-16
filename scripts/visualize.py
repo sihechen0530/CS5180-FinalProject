@@ -180,7 +180,23 @@ def main():
     )
 
     print(f"Loading agent: {model_path}")
-    model = PPO.load(model_path)
+    # The checkpoint was saved with MaskablePPO (sb3_contrib) which uses
+    # MaskableActorCriticPolicy.  Two compat issues on load:
+    #   1. Must load with MaskablePPO, not plain PPO.
+    #   2. Older SB3 stored `use_sde` as a top-level model attribute and passed
+    #      it as a kwarg to the policy constructor; MaskableActorCriticPolicy
+    #      no longer accepts it → TypeError.  Patch __init__ to drop it.
+    from sb3_contrib import MaskablePPO
+    from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
+    _orig_policy_init = MaskableActorCriticPolicy.__init__
+    def _compat_policy_init(self, *args, **kwargs):
+        kwargs.pop("use_sde", None)
+        _orig_policy_init(self, *args, **kwargs)
+    MaskableActorCriticPolicy.__init__ = _compat_policy_init
+    try:
+        model = MaskablePPO.load(model_path)
+    finally:
+        MaskableActorCriticPolicy.__init__ = _orig_policy_init  # restore
 
     num_episodes = args.episodes
     print(f"Running visualization for {num_episodes} episodes...")
@@ -224,17 +240,8 @@ def main():
 
             mp4_path = os.path.splitext(final_avi)[0] + ".mp4"
 
-            steps = extract_steps_from_model_path(model_path)
-            info_parts = [run_name, "mode=deterministic"]
-            if steps >= 0:
-                info_parts.append(f"steps={steps}")
-            overlay_text = " | ".join(info_parts)
-
-            print(
-                f"Converting final video to MP4: {final_avi} -> {mp4_path} "
-                f"with overlay '{overlay_text}'"
-            )
-            convert_avi_to_mp4(final_avi, mp4_path, overlay_text=overlay_text)
+            print(f"Converting final video to MP4: {final_avi} -> {mp4_path}")
+            convert_avi_to_mp4(final_avi, mp4_path)
 
 
 if __name__ == "__main__":
