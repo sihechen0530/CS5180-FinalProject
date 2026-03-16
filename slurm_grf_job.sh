@@ -13,7 +13,7 @@
 # as train for easy comparison. Optional env: ITER_NUM_ITERATIONS, ITER_STEPS_PER_ITERATION.
 #
 #SBATCH --job-name=grf
-#SBATCH --partition=short
+#SBATCH --partition=courses
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
